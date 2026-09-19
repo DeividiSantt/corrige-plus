@@ -86,8 +86,9 @@ export async function POST(request: Request) {
       .eq("exam_id", batch.exam_id)
       .is("deleted_at", null)
       .maybeSingle();
-    if (selectedSheetError || !selectedSheet || selectedSheet.status !== "generated" || selectedSheet.purged_at) {
-      return NextResponse.json({ error: "Este aluno não está mais disponível para identificação manual." }, { status: 409 });
+    const manualSelectionAllowed = ["generated", "corrected", "review_required", "confirmed", "failed"].includes(selectedSheet?.status || "");
+    if (selectedSheetError || !selectedSheet || !manualSelectionAllowed || selectedSheet.purged_at) {
+      return NextResponse.json({ error: "Este aluno não está disponível para identificação manual neste momento." }, { status: 409 });
     }
     manuallyIdentifiedSheet = selectedSheet;
   }
@@ -207,16 +208,21 @@ export async function POST(request: Request) {
           result.error_code = null;
           result.message = null;
         }
-        if (canReplaceConfirmed) {
+        const replacingSelectedManualSheet = Boolean(
+          selectedManualSheet && selectedManualSheet.status !== "generated",
+        );
+        if (canReplaceConfirmed || replacingSelectedManualSheet) {
           const now = new Date().toISOString();
           const { error: historyError } = await supabase.from("result_change_history").insert({
             organization_id: organizationId,
             answer_sheet_id: sheet.id,
             changed_by: userId,
-            change_type: "duplicate_resolution",
+            change_type: selectedManualSheet ? "manual_identification" : "duplicate_resolution",
             previous_value: { status: sheet.status, result_status: sheet.result_status, score: sheet.score },
-            new_value: { status: "processing", result_status: "processing", reason: "new_card_received" },
-            justification: "Novo cartão recebido para o mesmo aluno e avaliação; o resultado anterior foi substituído.",
+            new_value: { status: "processing", result_status: "processing", reason: selectedManualSheet ? "manual_student_selection" : "new_card_received" },
+            justification: selectedManualSheet
+              ? "Professor identificou manualmente o aluno neste cartão; o resultado anterior foi substituído."
+              : "Novo cartão recebido para o mesmo aluno e avaliação; o resultado anterior foi substituído.",
           });
           if (historyError) throw new Error(historyError.message);
           const { error: resetError } = await supabase.from("answer_sheets").update({

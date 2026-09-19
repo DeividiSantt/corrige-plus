@@ -21,16 +21,24 @@ export default async function BatchPage({ params }: { params: Promise<{ batchId:
     .order("created_at");
   const { data: availableSheets } = await supabase
     .from("answer_sheets")
-    .select("id,students(full_name,registration_number,call_number)")
+    .select("id,status,students(full_name,registration_number,call_number)")
     .eq("organization_id", organizationId)
     .eq("exam_id", batch.exam_id)
-    .eq("status", "generated")
     .is("deleted_at", null);
   const manualCandidates = (availableSheets || [])
     .map((sheet) => {
       const relation = sheet.students as { full_name: string; registration_number: string | null; call_number: string | null } | { full_name: string; registration_number: string | null; call_number: string | null }[] | null;
       const student = Array.isArray(relation) ? relation[0] : relation;
-      return student ? { answerSheetId: sheet.id, fullName: student.full_name, registrationNumber: student.registration_number, callNumber: student.call_number } : null;
+      return student
+        ? {
+            answerSheetId: sheet.id,
+            fullName: student.full_name,
+            registrationNumber: student.registration_number,
+            callNumber: student.call_number,
+            hasExistingCorrection: ["corrected", "review_required", "confirmed"].includes(sheet.status),
+            canBeSelected: !["uploaded", "queued", "processing"].includes(sheet.status),
+          }
+        : null;
     })
     .filter((student): student is ManualStudentCandidate => Boolean(student))
     .sort((first, second) => first.fullName.localeCompare(second.fullName, "pt-BR"));
