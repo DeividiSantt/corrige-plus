@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 export type ManualStudentCandidate = {
   answerSheetId: string;
@@ -20,20 +20,8 @@ export function ManualStudentIdentification({
 }) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ManualStudentCandidate | null>(null);
   const [error, setError] = useState("");
-
-  const visibleCandidates = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase("pt-BR");
-    if (!normalized) return candidates;
-    return candidates.filter((candidate) =>
-      [candidate.fullName, candidate.registrationNumber || "", candidate.callNumber || ""]
-        .join(" ")
-        .toLocaleLowerCase("pt-BR")
-        .includes(normalized),
-    );
-  }, [candidates, query]);
 
   async function confirmIdentification() {
     if (!selected) return;
@@ -74,19 +62,10 @@ export function ManualStudentIdentification({
         <div className="fixed inset-0 z-50 flex items-end bg-black/40 p-4 sm:items-center sm:justify-center" role="dialog" aria-modal="true" aria-labelledby={`identify-title-${processingFileId}`}>
           <section className="w-full max-w-xl rounded-xl bg-background p-5 shadow-xl">
             <h2 id={`identify-title-${processingFileId}`} className="text-xl font-bold">Identificar aluno manualmente</h2>
-            <p className="mt-2 text-sm text-muted-foreground">Selecione o aluno deste cartão. A foto será corrigida novamente, sem depender do QR Code.</p>
-            <label className="mt-4 block text-sm font-semibold" htmlFor={`student-search-${processingFileId}`}>Buscar aluno</label>
-            <input
-              id={`student-search-${processingFileId}`}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Nome, matrícula ou chamada"
-              className="mt-1 min-h-11 w-full rounded-lg border bg-background px-3"
-              autoFocus
-            />
+            <p className="mt-2 text-sm text-muted-foreground">Selecione o aluno na lista desta avaliação. A foto será corrigida novamente, sem depender do QR Code.</p>
             <div className="mt-3 max-h-64 space-y-2 overflow-y-auto rounded-lg border p-2">
-              {visibleCandidates.length === 0 && <p className="p-3 text-sm text-muted-foreground">Nenhum aluno disponível para esta avaliação.</p>}
-              {visibleCandidates.map((candidate) => (
+              {candidates.length === 0 && <p className="p-3 text-sm text-muted-foreground">Todos os alunos desta avaliação já possuem um cartão vinculado.</p>}
+              {candidates.map((candidate) => (
                 <button
                   key={candidate.answerSheetId}
                   type="button"
