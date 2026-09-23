@@ -50,3 +50,4 @@ tmp-card-*.jpg
 .codex/
 services/correction-api/tests/fixtures/real/
 services/correction-api/.debug/
+supabase/diagnostics/
