@@ -33,7 +33,7 @@ services:
     plan: free
     region: virginia
     buildCommand: pnpm install --frozen-lockfile && pnpm --filter @corrige-plus/web build
-    startCommand: pnpm --filter @corrige-plus/web start -- --hostname 0.0.0.0 --port $PORT
+    startCommand: pnpm --filter @corrige-plus/web exec next start --hostname 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
       - key: NEXT_PUBLIC_APP_URL
