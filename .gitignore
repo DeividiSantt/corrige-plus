@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Supabase local
+supabase/.branches/
+supabase/.temp/
+
+# Tests and reports
+coverage/
+htmlcov/
+test-results/
+playwright-report/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated
+*.tsbuildinfo
+*.log
+
+# Arquivos locais de operação e calibração (podem conter imagens de cartões ou dados de alunos)
+.tmp/
+tmp/
+output/
+calibration/
+tmp-card-*.jpg
+.agents/
+.codex/
+services/correction-api/tests/fixtures/real/
+services/correction-api/.debug/

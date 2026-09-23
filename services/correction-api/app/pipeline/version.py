@@ -1,0 +1,1 @@
+PIPELINE_VERSION = "opencv-v0.2"

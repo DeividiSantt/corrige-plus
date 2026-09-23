@@ -1,0 +1,30 @@
+{
+  "name": "corrige-plus",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @corrige-plus/web dev",
+    "dev:web": "pnpm --filter @corrige-plus/web dev",
+    "dev:api": "pnpm dev:correction",
+    "dev:correction": "powershell -ExecutionPolicy Bypass -File scripts/dev-correction.ps1",
+    "build": "pnpm --filter @corrige-plus/web build",
+    "lint": "pnpm --filter @corrige-plus/web lint",
+    "typecheck": "pnpm --filter @corrige-plus/web typecheck",
+    "test": "pnpm --filter @corrige-plus/web test",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "api:run": "python -m uvicorn app.main:app --app-dir services/correction-api --reload --host 0.0.0.0 --port 8000",
+    "api:test": "python -m pytest services/correction-api/tests",
+    "check:correction": "powershell -ExecutionPolicy Bypass -File scripts/check-correction.ps1",
+    "configure:correction": "powershell -ExecutionPolicy Bypass -File scripts/configure-correction.ps1",
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "supabase:reset": "supabase db reset"
+  },
+  "devDependencies": {
+    "supabase": "^2.109.1"
+  }
+}

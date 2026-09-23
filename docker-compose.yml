@@ -1,0 +1,38 @@
+services:
+  correction-api:
+    build:
+      context: ./services/correction-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/correction-api/app:/app/app:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  web:
+    image: node:22-alpine
+    working_dir: /workspace
+    command: ["corepack", "pnpm", "--filter", "@corrige-plus/web", "dev", "--hostname", "0.0.0.0"]
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/workspace
+      - web_node_modules:/workspace/node_modules
+      - pnpm_store:/pnpm/store
+    depends_on:
+      correction-api:
+        condition: service_healthy
+
+volumes:
+  web_node_modules:
+  pnpm_store:

@@ -1,0 +1,55 @@
+version: "1"
+
+services:
+  - type: web
+    name: corrige-plus-deividi-api
+    runtime: docker
+    plan: free
+    region: virginia
+    dockerfilePath: services/correction-api/Dockerfile
+    dockerContext: services/correction-api
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ALLOWED_ORIGINS
+        value: https://corrige-plus-deividi-web.onrender.com
+      - key: MAX_IMAGE_SIZE_MB
+        value: "15"
+      - key: FILE_RETENTION_HOURS
+        value: "24"
+      - key: RESULT_RETENTION_HOURS
+        value: "24"
+      - key: CORRECTION_DEBUG_ARTIFACTS
+        value: "false"
+      - key: CORRECTION_API_KEY
+        generateValue: true
+
+  - type: web
+    name: corrige-plus-deividi-web
+    runtime: node
+    plan: free
+    region: virginia
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @corrige-plus/web build
+    startCommand: pnpm --filter @corrige-plus/web start -- --hostname 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_APP_URL
+        value: https://corrige-plus-deividi-web.onrender.com
+      - key: NEXT_PUBLIC_CORRECTION_API_URL
+        value: https://corrige-plus-deividi-api.onrender.com
+      - key: CORRECTION_API_URL
+        value: https://corrige-plus-deividi-api.onrender.com
+      - key: CORRECTION_API_KEY
+        fromService:
+          type: web
+          name: corrige-plus-deividi-api
+          envVarKey: CORRECTION_API_KEY
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

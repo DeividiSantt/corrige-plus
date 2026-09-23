@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver
+allowBuilds:
+  core-js: set this to true or false
+  sharp: true
+  unrs-resolver: true
