@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { workspaceData } from "@/features/workspace/data";
 import { createStudentImportPlan } from "@/features/workspace/student-import-plan";
+import { parseMultiClassImportPayload } from "@/features/workspace/multi-class-import-schema";
 import { parseStudentsPayload } from "@/features/workspace/student-import-schema";
 
 export type StudentImportActionState = {
@@ -16,6 +17,11 @@ export type StudentImportActionState = {
   skippedCount?: number;
   conflictCount?: number;
   warnings?: string[];
+};
+
+export type MultiClassImportActionState = {
+  status: "idle" | "error" | "success";
+  message?: string;
 };
 
 async function context() {
@@ -260,6 +266,45 @@ export async function importStudentsAction(
     skippedCount,
     conflictCount,
     warnings,
+  };
+}
+
+export async function importClassesAndStudentsAction(
+  _previousState: MultiClassImportActionState,
+  formData: FormData,
+): Promise<MultiClassImportActionState> {
+  const payload = parseMultiClassImportPayload(formData.get("groupsPayload"));
+  if (!payload.success) return { status: "error", message: payload.message };
+
+  const { supabase, organizationId } = await context();
+  const { data, error } = await supabase.rpc("import_class_roster_batch", {
+    p_organization_id: organizationId,
+    p_groups: payload.groups.map((group) => ({
+      name: group.name,
+      grade: group.grade,
+      shift: group.shift,
+      school_year: group.schoolYear,
+      students: group.students.map((student) => ({
+        full_name: student.fullName,
+        registration_number: student.registrationNumber ?? null,
+        call_number: student.callNumber ?? null,
+      })),
+    })),
+  });
+  if (error) {
+    if (process.env.NODE_ENV === "development") {
+      console.error("[multi-class-import] batch_failed", { code: error.code, message: error.message });
+    }
+    return { status: "error", message: "Não foi possível importar as turmas. Confira se alguma matrícula já pertence a outra turma." };
+  }
+
+  const summary = data as { classes_created?: number; classes_updated?: number; students_created?: number; students_updated?: number } | null;
+  revalidatePath("/dashboard/turmas");
+  revalidatePath("/dashboard/alunos");
+  revalidatePath("/dashboard/configurar-avaliacao");
+  return {
+    status: "success",
+    message: `${summary?.classes_created ?? 0} turma(s) criada(s), ${summary?.classes_updated ?? 0} atualizada(s), ${summary?.students_created ?? 0} aluno(s) criado(s) e ${summary?.students_updated ?? 0} atualizado(s).`,
   };
 }
 

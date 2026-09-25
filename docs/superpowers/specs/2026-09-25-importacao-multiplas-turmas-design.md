@@ -48,7 +48,7 @@ O navegador extrai o texto de todas as paginas. O mesmo interpretador identifica
 
 Uma nova acao de importacao em lote recebe somente os grupos aprovados na previa. Ela valida novamente os dados e executa a criacao/atualizacao em uma unica transacao no Supabase.
 
-Uma turma existente e localizada por organizacao, nome, serie e ano letivo ativos. Se ela nao existir, sera criada usando o turno identificado ou informado.
+Uma turma existente e localizada por organizacao, nome e ano letivo, que e a regra unica ja existente no banco. Se ela nao existir, sera criada usando a serie e o turno identificados ou informados.
 
 Dentro da turma localizada, o aluno sera atualizado pela matricula. Sem matricula, a comparacao ocorre pelo nome normalizado na mesma turma. Alunos sem correspondencia sao criados. O processo nao remove alunos ja cadastrados que nao estejam presentes no arquivo.
 
