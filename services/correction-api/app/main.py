@@ -19,6 +19,12 @@ from app.pipeline.version import PIPELINE_VERSION
 logger = logging.getLogger(__name__)
 
 
+PROCESSING_INPUT_MESSAGES = {
+    "signed_image_download_unavailable": "Não foi possível baixar a foto temporária. Tente reprocessar o cartão.",
+    "signed_image_download_failed": "O link temporário da foto não está mais disponível. Envie uma nova foto.",
+}
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     service: str
@@ -135,14 +141,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 diagnostic_id=str(payload.processing_file_id),
             )
         except ValueError as exc:
+            error_code = str(exc)
             logger.warning(
                 "Correction rejected input processing_file_id=%s code=%s",
                 payload.processing_file_id,
-                str(exc),
+                error_code,
             )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"code": str(exc), "message": "A imagem enviada não pôde ser lida."},
+                detail={
+                    "code": error_code,
+                    "message": PROCESSING_INPUT_MESSAGES.get(
+                        error_code,
+                        "A imagem enviada não pôde ser lida.",
+                    ),
+                },
             ) from exc
         except Exception as exc:
             logger.exception(

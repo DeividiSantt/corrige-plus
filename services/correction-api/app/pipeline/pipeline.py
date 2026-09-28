@@ -1,4 +1,5 @@
 from dataclasses import asdict
+import asyncio
 import logging
 from pathlib import Path
 import tempfile
@@ -21,6 +22,52 @@ QR_ERROR_CODES = {
     "detected_not_decoded": "qr_detected_not_decoded",
     "invalid_format": "qr_invalid_format",
 }
+
+# Links assinados do Supabase são válidos por cinco minutos. Em instâncias
+# gratuitas, a primeira conexão entre Render e Storage pode oscilar ou demorar
+# mais que o normal. Mantemos as tentativas abaixo dentro do tempo total da
+# chamada feita pelo site (180 segundos) e não confundimos essa oscilação com
+# uma foto inválida.
+SIGNED_IMAGE_DOWNLOAD_ATTEMPTS = 3
+SIGNED_IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 50.0
+SIGNED_IMAGE_DOWNLOAD_RETRY_DELAYS_SECONDS = (2.0, 4.0)
+
+
+async def _download_signed_image(signed_url: str) -> bytes:
+    last_error: httpx.RequestError | None = None
+    timeout = httpx.Timeout(SIGNED_IMAGE_DOWNLOAD_TIMEOUT_SECONDS, connect=15.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        for attempt in range(SIGNED_IMAGE_DOWNLOAD_ATTEMPTS):
+            try:
+                response = await client.get(signed_url)
+                response.raise_for_status()
+                return response.content
+            except httpx.HTTPStatusError as exc:
+                # Erros de autorização ou URL expirado não melhoram com uma
+                # nova tentativa; devolvemos o código específico ao site.
+                logger.warning(
+                    "Unable to download signed answer-sheet image status=%s",
+                    exc.response.status_code,
+                )
+                raise ValueError("signed_image_download_failed") from exc
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt == SIGNED_IMAGE_DOWNLOAD_ATTEMPTS - 1:
+                    break
+                delay = SIGNED_IMAGE_DOWNLOAD_RETRY_DELAYS_SECONDS[attempt]
+                logger.warning(
+                    "Signed answer-sheet image download failed attempt=%s/%s error_type=%s; retrying in %ss",
+                    attempt + 1,
+                    SIGNED_IMAGE_DOWNLOAD_ATTEMPTS,
+                    type(exc).__name__,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+    logger.warning(
+        "Unable to reach signed answer-sheet image after retries error_type=%s",
+        type(last_error).__name__ if last_error else "unknown",
+    )
+    raise ValueError("signed_image_download_unavailable") from last_error
 
 
 def _save_debug_artifacts(
@@ -57,20 +104,7 @@ async def process_signed_image(
     subject_blocks: list[dict] | None = None,
     diagnostic_id: str | None = None,
 ) -> dict:
-    try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(signed_url)
-            response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "Unable to download signed answer-sheet image status=%s",
-            exc.response.status_code,
-        )
-        raise ValueError("signed_image_download_failed") from exc
-    except httpx.RequestError as exc:
-        logger.warning("Unable to reach signed answer-sheet image error_type=%s", type(exc).__name__)
-        raise ValueError("signed_image_download_unavailable") from exc
-    image = decode_image(response.content)
+    image = decode_image(await _download_signed_image(signed_url))
     quality = analyze_quality(image, config)
     initial_qr = read_qr_progressive(image, None, config)
     blocking = {"invalid_image", "low_resolution", "too_dark", "too_bright"}
