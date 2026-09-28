@@ -20,6 +20,31 @@ const requestSchema = z.object({
   manualAnswerSheetId: z.string().uuid().optional(),
 });
 
+type ReviewAnswer = {
+  classification: string;
+  detected_answer: string | null;
+  fill_percentages: Record<string, number>;
+};
+
+function reviewReason(answer: ReviewAnswer) {
+  const ranked = Object.entries(answer.fill_percentages || {})
+    .map(([option, fill]) => [option, Number(fill || 0)] as const)
+    .sort(([, first], [, second]) => second - first);
+  const percentage = (value: number) => `${Math.round(value * 100)}%`;
+  const [first, second] = ranked;
+
+  if (answer.classification === "low_confidence" && first && second) {
+    return `Leitura ambígua: ${first[0]} (${percentage(first[1])}) ficou próxima de ${second[0]} (${percentage(second[1])}). Revise antes de finalizar.`;
+  }
+  if (answer.classification === "multiple" && first && second) {
+    return `Há mais de uma marcação relevante: ${first[0]} (${percentage(first[1])}) e ${second[0]} (${percentage(second[1])}).`;
+  }
+  if (answer.classification === "unreadable") {
+    return "Não foi possível ler esta questão com segurança. Revise antes de finalizar.";
+  }
+  return "Esta questão precisa de revisão manual antes de finalizar a correção.";
+}
+
 export async function POST(request: Request) {
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Requisição inválida." }, { status: 400 });
@@ -355,7 +380,7 @@ export async function POST(request: Request) {
           .filter((answer: { classification: string }) =>
             ["multiple", "low_confidence", "unreadable"].includes(answer.classification),
           )
-          .map((answer: { question_number: number; classification: string; confidence: number; crop_coordinates: unknown }) => ({
+          .map((answer: ReviewAnswer & { question_number: number; confidence: number; crop_coordinates: unknown }) => ({
             organization_id: organizationId,
             batch_id: batch.id,
             processing_file_id: file.id,
@@ -364,7 +389,7 @@ export async function POST(request: Request) {
             exam_id: batch.exam_id,
             question_number: answer.question_number,
             issue_type: answer.classification,
-            reason: answer.classification,
+            reason: reviewReason(answer),
             confidence: answer.confidence,
             crop_coordinates: answer.crop_coordinates,
           }));

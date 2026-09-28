@@ -93,32 +93,8 @@ def read_bubbles(image: np.ndarray, total_questions: int, alternatives_count: in
             ):
                 fills[option] = 0.0
                 continue
-            roi = gray[center_y - radius:center_y + radius, center_x - radius:center_x + radius]
-            mask = np.zeros(roi.shape, dtype=np.uint8)
-            cv2.circle(mask, (radius, radius), max(1, radius - 4), 255, -1)
-            local_radius = radius * 2
-            local = gray[
-                max(0, center_y - local_radius) : min(gray.shape[0], center_y + local_radius),
-                max(0, center_x - local_radius) : min(gray.shape[1], center_x + local_radius),
-            ]
-            paper_level = max(1.0, float(np.percentile(local, 85)))
-            dark_pixels = np.where(roi < paper_level * config.bubble_darkness_ratio, 255, 0).astype(np.uint8)
-            fills[option] = round(
-                float(cv2.countNonZero(cv2.bitwise_and(dark_pixels, mask)))
-                / max(1, cv2.countNonZero(mask)),
-                4,
-            )
-        ranked = sorted(fills.items(), key=lambda item: item[1], reverse=True)
-        first, second = ranked[0], ranked[1]
-        if first[1] < config.bubble_blank_threshold:
-            classification, detected, confidence = "blank", None, min(1.0, 1.0 - first[1])
-        elif first[1] >= config.bubble_mark_threshold and second[1] >= config.bubble_mark_threshold and first[1] - second[1] <= config.double_mark_margin:
-            classification, detected, confidence = "multiple", None, 0.0
-        elif first[1] - second[1] < config.dominance_margin:
-            classification, detected, confidence = "low_confidence", first[0], max(0.0, first[1] - second[1])
-        else:
-            confidence = min(1.0, (first[1] - second[1]) / max(config.dominance_margin, 0.01))
-            classification, detected = ("answered" if confidence >= config.min_confidence else "low_confidence"), first[0]
+            fills[option] = _bubble_fill(gray, center_x, center_y, radius, config, hsv)
+        classification, detected, confidence = _classify_fills(fills, config)
         x1 = int((config.first_bubble_x_mm + column * config.column_spacing_mm - 6) * scale)
         x2 = int((config.first_bubble_x_mm + column * config.column_spacing_mm + alternatives_count * config.bubble_spacing_x_mm) * scale)
         answers.append(BubbleAnswer(question, detected, classification, round(confidence, 4), fills, (x1, center_y - radius - 8, x2, center_y + radius + 8)))

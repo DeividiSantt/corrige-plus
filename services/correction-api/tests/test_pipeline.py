@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from app.pipeline.bubble_detection import read_bubbles, read_bubbles_with_orientation_fallback
+from app.pipeline.bubble_detection import _classify_fills, read_bubbles, read_bubbles_with_orientation_fallback
 from app.pipeline.config import PipelineConfig
 from app.pipeline.document_detection import detect_document, normalize_perspective
 from app.pipeline.image_quality import analyze_quality, decode_image
@@ -57,6 +57,30 @@ def test_blank_single_and_double_answers() -> None:
     mark(double, 1, 1, config)
     double_result = read_bubbles(double, 10, 5, config)
     assert double_result[0].classification == "multiple"
+
+
+def test_answer_safety_policy_accepts_clear_marks_and_flags_uncertain_ones() -> None:
+    config = PipelineConfig()
+
+    clear_classification, clear_answer, _ = _classify_fills(
+        {"A": 0.60, "B": 0.38, "C": 0.02, "D": 0.01, "E": 0.01}, config
+    )
+    assert (clear_classification, clear_answer) == ("answered", "A")
+
+    ambiguous_classification, ambiguous_answer, _ = _classify_fills(
+        {"A": 0.51, "B": 0.47, "C": 0.02, "D": 0.01, "E": 0.01}, config
+    )
+    assert (ambiguous_classification, ambiguous_answer) == ("low_confidence", "A")
+
+    double_classification, double_answer, _ = _classify_fills(
+        {"A": 0.66, "B": 0.63, "C": 0.01, "D": 0.01, "E": 0.01}, config
+    )
+    assert (double_classification, double_answer) == ("multiple", None)
+
+    blank_classification, blank_answer, _ = _classify_fills(
+        {"A": 0.12, "B": 0.10, "C": 0.08, "D": 0.06, "E": 0.04}, config
+    )
+    assert (blank_classification, blank_answer) == ("blank", None)
 
 
 def test_dark_and_blurred_images_are_rejected() -> None:
