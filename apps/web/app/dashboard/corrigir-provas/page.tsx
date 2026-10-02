@@ -18,10 +18,20 @@ export default async function CorrectionUploadPage({
     .in("status", ["ready", "applied", "processing"])
     .order("created_at", { ascending: false });
 
+  const examIds = (exams || []).map((exam) => exam.id);
+  const { data: assignedClasses } = examIds.length
+    ? await supabase.from("exam_classes").select("exam_id,class_id,classes(id,name)").in("exam_id", examIds)
+    : { data: [] };
+  const classOptions = new Map<string, { id: string; name: string }[]>();
+  for (const assignment of assignedClasses || []) {
+    const relation = Array.isArray(assignment.classes) ? assignment.classes[0] : assignment.classes;
+    if (!relation) continue;
+    classOptions.set(assignment.exam_id, [...(classOptions.get(assignment.exam_id) || []), { id: relation.id, name: relation.name }]);
+  }
+
   const options = (exams || []).map((exam) => ({
     id: exam.id,
-    classId: exam.class_id,
-    className: exam.classes?.[0]?.name || "Turma",
+    classes: classOptions.get(exam.id) || [{ id: exam.class_id, name: exam.classes?.[0]?.name || "Turma" }],
     title: exam.title,
     subject: exam.subject,
     questions: exam.total_questions,

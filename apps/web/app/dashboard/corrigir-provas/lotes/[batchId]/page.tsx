@@ -9,7 +9,7 @@ export default async function BatchPage({ params }: { params: Promise<{ batchId:
   const { supabase, organizationId } = await workspaceData();
   const { data: batch } = await supabase
     .from("processing_batches")
-    .select("id,exam_id,created_by,exams(title),classes(name)")
+    .select("id,exam_id,class_id,created_by,exams(title),classes(name)")
     .eq("id", batchId)
     .eq("organization_id", organizationId)
     .single();
@@ -24,6 +24,7 @@ export default async function BatchPage({ params }: { params: Promise<{ batchId:
     .select("id,status,students(full_name,registration_number,call_number)")
     .eq("organization_id", organizationId)
     .eq("exam_id", batch.exam_id)
+    .eq("class_id", batch.class_id)
     .is("deleted_at", null);
   const manualCandidates = (availableSheets || [])
     .map((sheet) => {

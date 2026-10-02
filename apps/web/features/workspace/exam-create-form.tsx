@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { MinusIcon, PlusIcon } from "@phosphor-icons/react";
 import { createExamAction } from "@/features/workspace/actions";
@@ -14,7 +14,7 @@ type SubjectBlock = {
 const questionTotalOptions = [10, 20, 30, 40, 50];
 const alternatives = ["A", "B", "C", "D", "E"];
 
-function SubmitButton({ complete }: { complete: boolean }) {
+function SubmitButton({ complete, hasClasses }: { complete: boolean; hasClasses: boolean }) {
   const { pending } = useFormStatus();
 
   return (
@@ -22,12 +22,13 @@ function SubmitButton({ complete }: { complete: boolean }) {
       disabled={!complete || pending}
       className="h-11 w-full rounded-lg bg-primary font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
     >
-      {pending ? "Salvando avaliação..." : complete ? "Criar avaliação e continuar" : "Preencha o gabarito para continuar"}
+      {pending ? "Salvando avaliação..." : complete ? "Criar avaliação e continuar" : !hasClasses ? "Selecione ao menos uma turma" : "Preencha o gabarito para continuar"}
     </button>
   );
 }
 
 export function ExamCreateForm({ classes }: { classes: { id: string; name: string; subject: string | null }[] }) {
+  const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
   const [isMultidisciplinary, setIsMultidisciplinary] = useState(false);
   const [primarySubject, setPrimarySubject] = useState("");
   const [singleQuestionTotal, setSingleQuestionTotal] = useState(10);
@@ -41,14 +42,14 @@ export function ExamCreateForm({ classes }: { classes: { id: string; name: strin
   const allBlocksValid = blocks.length >= 2 && blocks.every((block) => block.subject.trim().length >= 2 && block.questionCount > 0);
   const totalIsSupported = questionTotalOptions.includes(totalQuestions);
   const answered = useMemo(() => answers.filter(Boolean).length, [answers]);
-  const complete = totalIsSupported && (!isMultidisciplinary || allBlocksValid) && answers.length === totalQuestions && answers.every(Boolean);
+  const complete = selectedClassIds.length > 0 && totalIsSupported && (!isMultidisciplinary || allBlocksValid) && answers.length === totalQuestions && answers.every(Boolean);
 
-  useEffect(() => {
+  function resizeAnswers(nextTotal: number) {
     setAnswers((current) => [
-      ...current.slice(0, totalQuestions),
-      ...Array(Math.max(0, totalQuestions - current.length)).fill(""),
+      ...current.slice(0, nextTotal),
+      ...Array(Math.max(0, nextTotal - current.length)).fill(""),
     ]);
-  }, [totalQuestions]);
+  }
 
   function setQuestion(index: number, answer: string) {
     setAnswers((current) => {
@@ -59,21 +60,25 @@ export function ExamCreateForm({ classes }: { classes: { id: string; name: strin
   }
 
   function updateBlock(id: number, field: "subject" | "questionCount", value: string) {
-    setBlocks((current) =>
-      current.map((block) =>
+    const nextBlocks = blocks.map((block) =>
         block.id === id
           ? { ...block, [field]: field === "questionCount" ? Math.max(0, Number(value)) : value }
           : block,
-      ),
-    );
+      );
+    setBlocks(nextBlocks);
+    resizeAnswers(isMultidisciplinary ? nextBlocks.reduce((total, block) => total + block.questionCount, 0) : singleQuestionTotal);
   }
 
   function addBlock() {
-    setBlocks((current) => [...current, { id: nextBlockId.current++, subject: "", questionCount: 10 }]);
+    const nextBlocks = [...blocks, { id: nextBlockId.current++, subject: "", questionCount: 10 }];
+    setBlocks(nextBlocks);
+    if (isMultidisciplinary) resizeAnswers(nextBlocks.reduce((total, block) => total + block.questionCount, 0));
   }
 
   function removeBlock(id: number) {
-    setBlocks((current) => current.filter((block) => block.id !== id));
+    const nextBlocks = blocks.filter((block) => block.id !== id);
+    setBlocks(nextBlocks);
+    if (isMultidisciplinary) resizeAnswers(nextBlocks.reduce((total, block) => total + block.questionCount, 0));
   }
 
   function changeMode(checked: boolean) {
@@ -81,6 +86,9 @@ export function ExamCreateForm({ classes }: { classes: { id: string; name: strin
     if (checked) {
       setBlocks([{ id: 1, subject: primarySubject, questionCount: singleQuestionTotal }]);
       nextBlockId.current = 2;
+      resizeAnswers(singleQuestionTotal);
+    } else {
+      resizeAnswers(singleQuestionTotal);
     }
   }
 
@@ -98,19 +106,33 @@ export function ExamCreateForm({ classes }: { classes: { id: string; name: strin
       </div>
 
       <input type="hidden" name="subject" value={isMultidisciplinary ? "Multidisciplinar" : primarySubject} />
+      <input type="hidden" name="classIds" value={JSON.stringify(selectedClassIds)} />
       <input type="hidden" name="totalQuestions" value={totalQuestions} />
       <input type="hidden" name="isMultidisciplinary" value={String(isMultidisciplinary)} />
       <input type="hidden" name="blocks" value={blocksPayload} />
       <input type="hidden" name="answers" value={answers.join(" ")} />
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-sm font-semibold">
-          Turma
-          <select name="classId" required className="mt-2 h-11 w-full rounded-lg border border-border bg-background px-3">
-            <option value="">Selecione a turma</option>
-            {classes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
-          </select>
-        </label>
+        <fieldset className="text-sm font-semibold">
+          <legend>Turmas em que será aplicada</legend>
+          <div aria-describedby="exam-classes-help" className="mt-2 max-h-44 space-y-1 overflow-y-auto rounded-lg border border-border bg-background p-2">
+            {classes.map((item) => (
+              <label key={item.id} className="flex min-h-10 cursor-pointer items-center gap-3 rounded-md px-2 font-normal hover:bg-surface">
+                <input
+                  type="checkbox"
+                  checked={selectedClassIds.includes(item.id)}
+                  onChange={(event) => setSelectedClassIds((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))}
+                  className="size-4 accent-primary"
+                />
+                {item.name}
+              </label>
+            ))}
+            {classes.length === 0 && <p className="p-2 text-sm font-normal text-muted-foreground">Cadastre uma turma antes de criar uma avaliação.</p>}
+          </div>
+          <span id="exam-classes-help" className="mt-1 block text-xs font-normal text-muted-foreground">
+            {selectedClassIds.length > 0 ? `${selectedClassIds.length} turma(s) selecionada(s).` : "Selecione uma ou mais turmas."}
+          </span>
+        </fieldset>
         <label className="text-sm font-semibold">
           Título
           <input name="title" required placeholder="Ex.: Avaliação do 2º bimestre" className="mt-2 h-11 w-full rounded-lg border border-border px-3" />
@@ -134,7 +156,7 @@ export function ExamCreateForm({ classes }: { classes: { id: string; name: strin
         {!isMultidisciplinary && (
           <label className="text-sm font-semibold">
             Quantidade de questões
-            <select value={singleQuestionTotal} onChange={(event) => setSingleQuestionTotal(Number(event.target.value))} className="mt-2 h-11 w-full rounded-lg border border-border bg-background px-3">
+              <select value={singleQuestionTotal} onChange={(event) => { const nextTotal = Number(event.target.value); setSingleQuestionTotal(nextTotal); resizeAnswers(nextTotal); }} className="mt-2 h-11 w-full rounded-lg border border-border bg-background px-3">
               {questionTotalOptions.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>
@@ -230,7 +252,7 @@ export function ExamCreateForm({ classes }: { classes: { id: string; name: strin
         </div>
       </section>
 
-      <SubmitButton complete={complete} />
+      <SubmitButton complete={complete} hasClasses={selectedClassIds.length > 0} />
     </form>
   );
 }

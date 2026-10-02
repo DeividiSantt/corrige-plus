@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Literal
+
 import cv2
 import numpy as np
 
@@ -15,6 +18,50 @@ def _order(points: np.ndarray) -> np.ndarray:
     return ordered
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentDetectionResult:
+    status: Literal["detected", "not_found", "invalid_geometry"]
+    corners: np.ndarray | None
+    strategy: Literal["markers", "contour"] | None
+
+
+def _valid_page_corners(corners: np.ndarray, image_shape: tuple[int, ...]) -> bool:
+    points = np.asarray(corners, dtype=np.float32)
+    if points.shape != (4, 2) or not np.isfinite(points).all():
+        return False
+
+    height, width = image_shape[:2]
+    if width < 2 or height < 2:
+        return False
+    ordered = _order(points).reshape(4, 1, 2)
+    if not cv2.isContourConvex(ordered):
+        return False
+
+    area = abs(float(cv2.contourArea(ordered)))
+    image_area = float(width * height)
+    if not image_area * 0.05 <= area <= image_area * 1.5:
+        return False
+
+    xs = ordered[:, 0, 0]
+    ys = ordered[:, 0, 1]
+    if (
+        float(xs.min()) < -width * 0.25
+        or float(xs.max()) > width * 1.25
+        or float(ys.min()) < -height * 0.25
+        or float(ys.max()) > height * 1.25
+    ):
+        return False
+
+    edges = np.roll(ordered[:, 0, :], -1, axis=0) - ordered[:, 0, :]
+    lengths = np.linalg.norm(edges, axis=1)
+    if float(lengths.min()) < max(2.0, min(width, height) * 0.04):
+        return False
+    side_a = max(float(lengths[0]), float(lengths[2]))
+    side_b = max(float(lengths[1]), float(lengths[3]))
+    portrait_ratio = min(side_a, side_b) / max(side_a, side_b)
+    return 0.30 <= portrait_ratio <= 1.10
+
+
 def _detect_marker_centers(image: np.ndarray) -> np.ndarray | None:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     image_area = image.shape[0] * image.shape[1]
@@ -26,16 +73,33 @@ def _detect_marker_centers(image: np.ndarray) -> np.ndarray | None:
         lambda point: point[0] >= width / 2 and point[1] >= height / 2,
         lambda point: point[0] < width / 2 and point[1] >= height / 2,
     )
-    # Fotos comprimidas ou superexpostas podem transformar os marcadores em
-    # cinza claro. Tentamos limiares progressivos, mas preservamos o filtro
-    # geométrico e a escolha por quadrantes para não aceitar bolhas como canto.
-    for threshold in (75, 105, 135, 165):
-        mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)[1]
+    # O papel colorido/sombreado pode deslocar o nivel de cinza dos marcadores.
+    # Preservamos os limiares globais conhecidos e acrescentamos mascaras locais
+    # para recuperar marcadores fracos sem mudar a imagem usada nas bolhas.
+    masks = [
+        cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)[1]
+        for threshold in (75, 105, 135, 165)
+    ]
+    local_gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    masks.extend(
+        cv2.threshold(local_gray, threshold, 255, cv2.THRESH_BINARY_INV)[1]
+        for threshold in (95, 125, 155, 185)
+    )
+    for block_size, offset in ((31, 5), (51, 7)):
+        if min(height, width) > block_size:
+            masks.append(
+                cv2.adaptiveThreshold(
+                    gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY_INV, block_size, offset,
+                )
+            )
+
+    for mask in masks:
         contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         candidates: list[np.ndarray] = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if not image_area * 0.00001 <= area <= image_area * 0.003:
+            if not max(25.0, image_area * 0.00001) <= area <= image_area * 0.003:
                 continue
             x, y, marker_width, marker_height = cv2.boundingRect(contour)
             if marker_height == 0 or not 0.30 <= marker_width / marker_height <= 3.00:
@@ -77,30 +141,61 @@ def _page_corners_from_markers(
     return cv2.perspectiveTransform(canonical_page, canonical_to_photo).reshape(4, 2)
 
 
-def detect_document(image: np.ndarray, config: PipelineConfig | None = None) -> np.ndarray | None:
+def detect_document_detailed(
+    image: np.ndarray,
+    config: PipelineConfig | None = None,
+) -> DocumentDetectionResult:
     # Os marcadores pertencem ao modelo oficial do cartão e são mais confiáveis
     # que contornos externos em fotos sobre pisos, mesas ou azulejos.
     pipeline_config = config or PipelineConfig()
     marker_centers = _detect_marker_centers(image)
+    invalid_marker_geometry = False
     if marker_centers is not None:
-        return _page_corners_from_markers(marker_centers, pipeline_config)
+        # A photo may have any quarter-turn orientation. The marker grid is
+        # rectangular and its four corners are cyclically equivalent, so test
+        # the four rotations before deciding the geometry is invalid.
+        for rotation in range(4):
+            ordered_markers = np.roll(marker_centers, rotation, axis=0)
+            corners = _page_corners_from_markers(ordered_markers, pipeline_config)
+            if _valid_page_corners(corners, image.shape):
+                return DocumentDetectionResult("detected", corners, "markers")
+        # Marcadores espúrios/ambíguos não devem impedir uma segunda estratégia
+        # independente baseada no contorno completo e geometricamente validado.
+        invalid_marker_geometry = True
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 150)
     contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     minimum_area = image.shape[0] * image.shape[1] * 0.25
+    invalid_contour_geometry = False
     for contour in sorted(contours, key=cv2.contourArea, reverse=True):
         if cv2.contourArea(contour) < minimum_area:
             break
         perimeter = cv2.arcLength(contour, True)
         polygon = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
         if len(polygon) == 4:
-            return _order(polygon.reshape(4, 2).astype(np.float32))
-    return None
+            corners = _order(polygon.reshape(4, 2).astype(np.float32))
+            if _valid_page_corners(corners, image.shape):
+                return DocumentDetectionResult("detected", corners, "contour")
+            invalid_contour_geometry = True
+    if invalid_marker_geometry or invalid_contour_geometry:
+        return DocumentDetectionResult(
+            "invalid_geometry",
+            None,
+            "markers" if invalid_marker_geometry else "contour",
+        )
+    return DocumentDetectionResult("not_found", None, None)
+
+
+def detect_document(image: np.ndarray, config: PipelineConfig | None = None) -> np.ndarray | None:
+    """Compatibility wrapper returning only the detected page corners."""
+    return detect_document_detailed(image, config).corners
 
 
 def normalize_perspective(image: np.ndarray, corners: np.ndarray, config: PipelineConfig) -> np.ndarray:
+    if not _valid_page_corners(corners, image.shape):
+        raise ValueError("INVALID_DOCUMENT_GEOMETRY")
     top_left, top_right, bottom_right, bottom_left = _order(corners)
     measured_width = int(
         max(

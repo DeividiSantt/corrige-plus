@@ -25,8 +25,7 @@ import {
 
 type ExamOption = {
   id: string;
-  classId: string;
-  className: string;
+  classes: { id: string; name: string }[];
   title: string;
   subject: string;
   questions: number;
@@ -93,6 +92,10 @@ export function UploadPanel({
   initialExamId?: string;
 }) {
   const [examId, setExamId] = useState(initialExamId || "");
+  const [classId, setClassId] = useState(() => {
+    const initialExam = exams.find((item) => item.id === initialExamId);
+    return initialExam?.classes.length === 1 ? initialExam.classes[0].id : "";
+  });
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -100,6 +103,7 @@ export function UploadPanel({
   const fileInput = useRef<HTMLInputElement>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
   const exam = exams.find((item) => item.id === examId);
+  const selectedClass = exam?.classes.find((item) => item.id === classId);
   const validFiles = useMemo(() => files.filter((item) => !item.error), [files]);
 
   async function addFiles(list: FileList | File[]) {
@@ -135,7 +139,7 @@ export function UploadPanel({
   }
 
   async function upload() {
-    if (!exam || !validFiles.length) return;
+    if (!exam || !selectedClass || !validFiles.length) return;
     setSubmitting(true);
     setMessage("");
     const supabase = createClient();
@@ -144,7 +148,7 @@ export function UploadPanel({
       .insert({
         organization_id: organizationId,
         exam_id: exam.id,
-        class_id: exam.classId,
+        class_id: selectedClass.id,
         created_by: userId,
         status: "waiting",
         total_files: validFiles.length,
@@ -297,13 +301,18 @@ export function UploadPanel({
           Avaliação
           <select
             value={examId}
-            onChange={(event) => setExamId(event.target.value)}
+            onChange={(event) => {
+              const nextExamId = event.target.value;
+              setExamId(nextExamId);
+              const nextExam = exams.find((item) => item.id === nextExamId);
+              setClassId(nextExam?.classes.length === 1 ? nextExam.classes[0].id : "");
+            }}
             className="h-11 w-full rounded-lg border bg-background px-3 font-normal"
           >
             <option value="">Selecione uma avaliação</option>
             {exams.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.className} · {item.title}
+                {item.title}
               </option>
             ))}
           </select>
@@ -312,13 +321,28 @@ export function UploadPanel({
           {exam ? (
             <>
               <strong>{exam.subject}</strong>
-              <p className="text-muted-foreground">{exam.questions} questões · {exam.className}</p>
+              <p className="text-muted-foreground">{exam.questions} questões · {exam.classes.length} turma(s) associada(s)</p>
             </>
           ) : (
             <p className="text-muted-foreground">Os dados da prova aparecerão aqui.</p>
           )}
         </div>
       </div>
+
+      {exam && (
+        <label className="block space-y-2 font-semibold">
+          Turma deste lote
+          <select
+            required
+            value={classId}
+            onChange={(event) => setClassId(event.target.value)}
+            className="h-11 w-full rounded-lg border bg-background px-3 font-normal"
+          >
+            <option value="">Selecione a turma</option>
+            {exam.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        </label>
+      )}
 
       <div
         onDragOver={(event) => event.preventDefault()}
@@ -382,7 +406,7 @@ export function UploadPanel({
       <button
         type="button"
         onClick={() => void upload()}
-        disabled={!exam || !validFiles.length || submitting}
+        disabled={!exam || !selectedClass || !validFiles.length || submitting}
         className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-primary px-5 font-semibold text-white disabled:opacity-50 sm:w-auto"
       >
         {submitting ? "Enviando imagens…" : `Enviar ${validFiles.length || ""} imagens`}

@@ -10,6 +10,7 @@ const issueLabels: Record<string, string> = {
   qr_detected_not_decoded: "QR Code localizado, mas ilegível",
   qr_invalid_format: "QR Code fora do formato do CORRIGE+",
   document_not_found: "Bordas do cartão não localizadas",
+  invalid_document_geometry: "Geometria do cartão inválida",
   INVALID_QR_TOKEN: "QR Code inválido",
   WRONG_EXAM: "Cartão de outra avaliação",
   DUPLICATE_SHEET: "Cartão duplicado",

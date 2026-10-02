@@ -16,6 +16,7 @@ export type StudentImportActionState = {
   updatedCount?: number;
   skippedCount?: number;
   conflictCount?: number;
+  answerSheetsCreated?: number;
   warnings?: string[];
 };
 
@@ -31,6 +32,19 @@ async function context() {
   } catch {
     redirect("/login");
   }
+}
+
+async function createMissingAnswerSheets(
+  supabase: Awaited<ReturnType<typeof workspaceData>>["supabase"],
+  organizationId: string,
+  classId: string,
+) {
+  const { data, error } = await supabase.rpc("ensure_missing_answer_sheets_for_class", {
+    p_organization_id: organizationId,
+    p_class_id: classId,
+  });
+  if (error) return { count: 0, error };
+  return { count: typeof data === "number" ? data : 0, error: null };
 }
 
 export async function createClassAction(formData: FormData) {
@@ -103,12 +117,18 @@ export async function importStudentsAction(
         .filter((registration): registration is string => Boolean(registration)),
     ),
   ];
-  let existingStudents: { id: string; class_id: string; registration_number: string | null }[] = [];
+  let existingStudents: {
+    id: string;
+    class_id: string;
+    registration_number: string | null;
+    full_name: string;
+    call_number: number | null;
+  }[] = [];
 
   if (registrations.length > 0) {
     const { data, error } = await supabase
       .from("students")
-      .select("id,class_id,registration_number")
+      .select("id,class_id,registration_number,full_name,call_number")
       .eq("organization_id", organizationId)
       .in("registration_number", registrations)
       .is("deleted_at", null);
@@ -128,6 +148,30 @@ export async function importStudentsAction(
     existingStudents = data ?? [];
   }
 
+  if (payload.students.some((student) => !student.registrationNumber)) {
+    const { data, error } = await supabase
+      .from("students")
+      .select("id,class_id,registration_number,full_name,call_number")
+      .eq("organization_id", organizationId)
+      .eq("class_id", classId)
+      .is("deleted_at", null);
+    if (error) {
+      if (process.env.NODE_ENV === "development") {
+        console.error("[student-import] name_lookup_failed", {
+          code: error.code,
+          message: error.message,
+        });
+      }
+      return {
+        status: "error",
+        message: "Não foi possível verificar alunos já cadastrados. Tente novamente.",
+      };
+    }
+    const byId = new Map(existingStudents.map((student) => [student.id, student]));
+    for (const student of data ?? []) byId.set(student.id, student);
+    existingStudents = [...byId.values()];
+  }
+
   const plan = createStudentImportPlan(payload.students, existingStudents, classId);
   const warnings: string[] = [];
   let importedCount = 0;
@@ -139,8 +183,8 @@ export async function importStudentsAction(
       .from("students")
       .update({
         full_name: update.student.fullName,
-        registration_number: update.student.registrationNumber ?? null,
-        call_number: update.student.callNumber ?? null,
+        registration_number: update.student.registrationNumber ?? update.existingRegistrationNumber,
+        call_number: update.student.callNumber ?? update.existingCallNumber,
       })
       .eq("id", update.existingId)
       .eq("organization_id", organizationId)
@@ -229,6 +273,19 @@ export async function importStudentsAction(
     importedCount += data?.length ?? 0;
   }
 
+  const answerSheets = await createMissingAnswerSheets(supabase, organizationId, classId);
+  if (answerSheets.error) {
+    if (process.env.NODE_ENV === "development") {
+      console.error("[student-import] answer_sheet_sync_failed", {
+        code: answerSheets.error.code,
+        message: answerSheets.error.message,
+      });
+    }
+    warnings.push("Os alunos foram importados, mas os cartões das avaliações existentes não puderam ser atualizados agora.");
+  } else if (answerSheets.count > 0) {
+    warnings.push(`${answerSheets.count} cartão(ões)-resposta foram criado(s) para avaliações prontas desta turma.`);
+  }
+
   const conflictCount = plan.conflicts.length + concurrentConflictCount;
   const skippedCount = conflictCount + plan.duplicatePayloadRows.length;
   if (plan.conflicts.length > 0) {
@@ -258,6 +315,12 @@ export async function importStudentsAction(
   }
 
   revalidatePath("/dashboard/alunos");
+  revalidatePath("/dashboard/turmas");
+  revalidatePath("/dashboard/avaliacoes");
+  revalidatePath("/dashboard/avaliacoes/[examId]/cartoes", "page");
+  revalidatePath("/dashboard/corrigir-provas");
+  revalidatePath("/dashboard/configurar-avaliacao");
+  revalidatePath("/dashboard");
   return {
     status: "success",
     message: "Importação concluída.",
@@ -265,6 +328,7 @@ export async function importStudentsAction(
     updatedCount,
     skippedCount,
     conflictCount,
+    answerSheetsCreated: answerSheets.count,
     warnings,
   };
 }
@@ -301,6 +365,9 @@ export async function importClassesAndStudentsAction(
   const summary = data as { classes_created?: number; classes_updated?: number; students_created?: number; students_updated?: number } | null;
   revalidatePath("/dashboard/turmas");
   revalidatePath("/dashboard/alunos");
+  revalidatePath("/dashboard/avaliacoes");
+  revalidatePath("/dashboard/avaliacoes/[examId]/cartoes", "page");
+  revalidatePath("/dashboard/corrigir-provas");
   revalidatePath("/dashboard/configurar-avaliacao");
   return {
     status: "success",
@@ -310,7 +377,8 @@ export async function importClassesAndStudentsAction(
 
 export async function createExamAction(formData: FormData) {
   const input = z.object({
-    classId: z.string().uuid(),
+    classIds: z.string().optional(),
+    classId: z.string().uuid().optional(),
     title: z.string().min(2),
     subject: z.string().min(1),
     examDate: z.string().optional(),
@@ -320,6 +388,13 @@ export async function createExamAction(formData: FormData) {
     isMultidisciplinary: z.enum(["true", "false"]).default("false"),
     blocks: z.string().optional(),
   }).parse(Object.fromEntries(formData));
+  let classIds: string[];
+  try {
+    classIds = input.classIds ? z.array(z.string().uuid()).min(1).parse(JSON.parse(input.classIds)) : [z.string().uuid().parse(input.classId)];
+  } catch {
+    throw new Error("Selecione ao menos uma turma válida.");
+  }
+  classIds = [...new Set(classIds)];
   const answers = input.answers.toUpperCase().split(/[\s,;]+/).filter(Boolean);
   if (answers.length !== input.totalQuestions || answers.some((answer) => !/^[A-E]$/.test(answer))) throw new Error("Informe uma alternativa de A a E para cada questão.");
   const isMultidisciplinary = input.isMultidisciplinary === "true";
@@ -340,39 +415,23 @@ export async function createExamAction(formData: FormData) {
     if (blockQuestionTotal !== input.totalQuestions) throw new Error("A soma das questões dos blocos precisa ser igual ao total da avaliação.");
     if (![10, 20, 30, 40, 50].includes(blockQuestionTotal)) throw new Error("A prova por blocos deve ter 10, 20, 30, 40 ou 50 questões no total.");
   }
-  const { supabase, userId, organizationId } = await context();
-  const { data: exam, error: examError } = await supabase.from("exams").insert({ organization_id: organizationId, class_id: input.classId, created_by: userId, title: input.title, subject: input.subject, exam_date: input.examDate || null, total_questions: input.totalQuestions, total_score: input.totalScore, status: "ready" }).select("id").single();
-  if (examError || !exam) throw new Error(examError?.message || "Não foi possível criar a avaliação.");
-  const { data: version, error: versionError } = await supabase.from("exam_versions").insert({ exam_id: exam.id, name: "Versão A", code: "A" }).select("id").single();
-  if (versionError || !version) throw new Error(versionError?.message || "Não foi possível criar a versão.");
-  if (subjectBlocks.length) {
-    let firstQuestion = 1;
-    const { error: blocksError } = await supabase.from("exam_subject_blocks").insert(
-      subjectBlocks.map((block, index) => {
-        const startQuestionNumber = firstQuestion;
-        const endQuestionNumber = firstQuestion + block.questionCount - 1;
-        firstQuestion = endQuestionNumber + 1;
-        return {
-          exam_version_id: version.id,
-          subject: block.subject,
-          position: index + 1,
-          start_question_number: startQuestionNumber,
-          end_question_number: endQuestionNumber,
-        };
-      }),
-    );
-    if (blocksError) throw new Error("Não foi possível salvar os blocos por matéria. Tente novamente.");
-  }
-  const score = input.totalScore / input.totalQuestions;
-  const { error: questionsError } = await supabase.from("exam_questions").insert(answers.map((correct_answer, index) => ({ exam_version_id: version.id, question_number: index + 1, correct_answer, score_value: score })));
-  if (questionsError) throw new Error(questionsError.message);
-  const { data: students } = await supabase.from("students").select("id").eq("class_id", input.classId).eq("status", "active");
-  if (students?.length) {
-    const { error: sheetsError } = await supabase.from("answer_sheets").insert(students.map((student) => ({ organization_id: organizationId, exam_id: exam.id, exam_version_id: version.id, class_id: input.classId, student_id: student.id })));
-    if (sheetsError) throw new Error(sheetsError.message);
-  }
+  const { supabase, organizationId } = await context();
+  const { data: examId, error: examError } = await supabase.rpc("create_exam_for_classes", {
+    p_organization_id: organizationId,
+    p_class_ids: classIds,
+    p_title: input.title,
+    p_subject: input.subject,
+    p_exam_date: input.examDate || null,
+    p_total_questions: input.totalQuestions,
+    p_total_score: input.totalScore,
+    p_answers: answers,
+    p_subject_blocks: subjectBlocks.map((block) => ({ subject: block.subject, question_count: block.questionCount })),
+  });
+  if (examError || !examId) throw new Error(examError?.message || "Não foi possível criar a avaliação.");
   revalidatePath("/dashboard/avaliacoes");
-  redirect(`/dashboard/avaliacoes/${exam.id}/cartoes`);
+  revalidatePath("/dashboard/corrigir-provas");
+  revalidatePath("/dashboard/alunos");
+  redirect(`/dashboard/avaliacoes/${examId}/cartoes`);
 }
 
 export async function deleteExamAction(formData: FormData) {

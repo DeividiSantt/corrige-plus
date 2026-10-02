@@ -306,3 +306,55 @@ export function parseStudentFile(data: ArrayBuffer, fileName = ""): StudentImpor
     : XLSX.read(data, { type: "array", cellText: true });
   return parseStudentWorkbook(workbook);
 }
+
+/**
+ * Reads a simple, text-selectable class list extracted from a PDF. The PDF
+ * extraction itself is done in the browser; this keeps the recognition logic
+ * testable and shared with the regular student-import result format.
+ */
+export function parseStudentPdfText(text: string, fileName = "PDF"): StudentImportResult {
+  const validStudents: StudentImportRow[] = [];
+  const warnings: string[] = [];
+  const seenCalls = new Set<number>();
+  const seenNames = new Set<string>();
+  const lines = text.split(/\r?\n/).map(cleanCellText);
+
+  lines.forEach((line, index) => {
+    // Common school report layout: "01 ANA CLARA SILVA". Names in title case
+    // are also accepted, while headings without a numeric call number are not.
+    const match = line.match(/^(\d{1,4})\s+([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ '.-]{1,178})$/);
+    if (!match) return;
+
+    const callNumber = parseCallNumber(match[1]);
+    const fullName = cleanCellText(match[2]);
+    if (!callNumber || fullName.length < 2) return;
+
+    const nameKey = normalizeHeader(fullName);
+    if (seenCalls.has(callNumber) || seenNames.has(nameKey)) {
+      warnings.push(`Linha ${index + 1}: entrada repetida no PDF foi ignorada.`);
+      return;
+    }
+
+    seenCalls.add(callNumber);
+    seenNames.add(nameKey);
+    validStudents.push({
+      fullName,
+      callNumber,
+      sourceRow: index + 1,
+      warnings: [],
+    });
+  });
+
+  if (validStudents.length === 0) {
+    warnings.push("Não foi possível identificar alunos neste PDF. Envie um PDF com texto selecionável e alunos numerados ou uma planilha.");
+  }
+
+  return {
+    validStudents,
+    rejectedRows: [],
+    detectedHeaders: validStudents.length ? ["PDF textual"] : [],
+    selectedSheet: fileName || "PDF",
+    warnings,
+    rawRowCount: validStudents.length,
+  };
+}

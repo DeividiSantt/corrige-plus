@@ -12,6 +12,9 @@ vi.mock("next/navigation", () => ({
     throw new Error(`redirect:${destination}`);
   }),
 }));
+vi.mock("next/headers", () => ({
+  cookies: vi.fn(async () => ({ get: vi.fn(() => undefined) })),
+}));
 
 import {
   importStudentsAction,
@@ -46,6 +49,7 @@ function createSupabaseScenario(scenario: SupabaseScenario = {}) {
     update: vi.fn(),
     upsert: vi.fn(),
     insert: vi.fn(),
+    rpc: vi.fn(),
   };
   const profileBuilder = {
     select() {
@@ -56,6 +60,20 @@ function createSupabaseScenario(scenario: SupabaseScenario = {}) {
     },
     async single() {
       return { data: { organization_id: organizationId }, error: null };
+    },
+  };
+  const membershipsBuilder = {
+    select() {
+      return this;
+    },
+    eq() {
+      return this;
+    },
+    order() {
+      return Promise.resolve({
+        data: [{ organization_id: organizationId, full_name: "Professor", role: "organization_admin", organizations: { name: "Escola", kind: "school" } }],
+        error: null,
+      });
     },
   };
   const classBuilder = {
@@ -121,9 +139,14 @@ function createSupabaseScenario(scenario: SupabaseScenario = {}) {
     },
     from(table: string) {
       if (table === "profiles") return profileBuilder;
+      if (table === "organization_memberships") return membershipsBuilder;
       if (table === "classes") return classBuilder;
       if (table === "students") return studentsTable;
       throw new Error(`Unexpected table: ${table}`);
+    },
+    async rpc(name: string, input: unknown) {
+      calls.rpc(name, input);
+      return { data: 0, error: null };
     },
   };
   return { supabase, calls };
@@ -238,5 +261,9 @@ describe("importStudentsAction", () => {
       },
     ]);
     expect(mocks.revalidatePath).toHaveBeenCalledWith("/dashboard/alunos");
+    expect(scenario.calls.rpc).toHaveBeenCalledWith("ensure_missing_answer_sheets_for_class", {
+      p_organization_id: organizationId,
+      p_class_id: classId,
+    });
   });
 });

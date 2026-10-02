@@ -4,6 +4,7 @@ import {
   normalizeHeader,
   parseCallNumber,
   parseStudentFile,
+  parseStudentPdfText,
   parseStudentWorkbook,
 } from "@/features/workspace/student-import-parser";
 
@@ -214,5 +215,33 @@ describe("parseStudentWorkbook", () => {
       registrationNumber: "001245",
       callNumber: 1,
     });
+  });
+});
+
+describe("parseStudentPdfText", () => {
+  it("identifica alunos numerados em um PDF textual", () => {
+    const result = parseStudentPdfText([
+      "RELAÇÃO DE ALUNOS",
+      "Turma: 2º ano A",
+      "Nº Nome do aluno",
+      "1 ANA CLARA SILVA",
+      "2 Arthur Pereira",
+      "3 MARIA EDUARDA DE SOUSA",
+    ].join("\n"), "turma-2a.pdf");
+
+    expect(result.selectedSheet).toBe("turma-2a.pdf");
+    expect(result.detectedHeaders).toEqual(["PDF textual"]);
+    expect(result.validStudents).toEqual([
+      expect.objectContaining({ fullName: "ANA CLARA SILVA", callNumber: 1, sourceRow: 4 }),
+      expect.objectContaining({ fullName: "Arthur Pereira", callNumber: 2, sourceRow: 5 }),
+      expect.objectContaining({ fullName: "MARIA EDUARDA DE SOUSA", callNumber: 3, sourceRow: 6 }),
+    ]);
+  });
+
+  it("remove linhas repetidas pelo número de chamada", () => {
+    const result = parseStudentPdfText("1 ANA CLARA SILVA\n1 ANA CLARA SILVA", "alunos.pdf");
+
+    expect(result.validStudents).toHaveLength(1);
+    expect(result.warnings.join(" ")).toContain("repetida");
   });
 });

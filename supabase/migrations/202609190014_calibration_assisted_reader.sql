@@ -1,6 +1,6 @@
 begin;
 
-create table public.calibration_examples (
+create table if not exists public.calibration_examples (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   review_item_id uuid not null unique references public.review_items(id) on delete cascade,
@@ -27,10 +27,10 @@ create table public.calibration_examples (
   check (confirmed_answers <@ array['A', 'B', 'C', 'D', 'E']::text[])
 );
 
-create index calibration_examples_organization_layout_idx
+create index if not exists calibration_examples_organization_layout_idx
   on public.calibration_examples (organization_id, layout_version, algorithm_version, created_at desc);
 
-create table public.calibration_config_versions (
+create table if not exists public.calibration_config_versions (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   parameters jsonb not null,
@@ -46,17 +46,21 @@ create table public.calibration_config_versions (
   check ((status = 'published') = (published_at is not null and published_by is not null))
 );
 
-create unique index calibration_config_versions_one_published_per_organization
+create unique index if not exists calibration_config_versions_one_published_per_organization
   on public.calibration_config_versions (organization_id)
   where status = 'published';
 
 alter table public.calibration_examples enable row level security;
 alter table public.calibration_config_versions enable row level security;
 
+drop policy if exists calibration_examples_tenant_access on public.calibration_examples;
+
 create policy calibration_examples_tenant_access
 on public.calibration_examples for all to authenticated
 using ((select private.has_organization_access(organization_id)))
 with check ((select private.has_organization_access(organization_id)));
+
+drop policy if exists calibration_config_versions_tenant_access on public.calibration_config_versions;
 
 create policy calibration_config_versions_tenant_access
 on public.calibration_config_versions for all to authenticated
@@ -65,6 +69,8 @@ with check ((select private.has_organization_access(organization_id)));
 
 grant select, insert, update, delete on public.calibration_examples to authenticated;
 grant select, insert, update, delete on public.calibration_config_versions to authenticated;
+
+drop trigger if exists calibration_config_versions_set_updated_at on public.calibration_config_versions;
 
 create trigger calibration_config_versions_set_updated_at
 before update on public.calibration_config_versions

@@ -70,6 +70,15 @@ export async function POST(request: Request) {
   if (!batch || batch.created_by !== userId) {
     return NextResponse.json({ error: "Acesso negado." }, { status: 403 });
   }
+  const { data: classAssignment } = await supabase
+    .from("exam_classes")
+    .select("class_id")
+    .eq("exam_id", batch.exam_id)
+    .eq("class_id", batch.class_id)
+    .maybeSingle();
+  if (!classAssignment) {
+    return NextResponse.json({ error: "Esta turma não está associada à avaliação deste lote." }, { status: 409 });
+  }
   const { data: exam } = await supabase
     .from("exams")
     .select("total_questions,alternatives_count")
@@ -109,6 +118,7 @@ export async function POST(request: Request) {
       .eq("id", parsed.data.manualAnswerSheetId)
       .eq("organization_id", organizationId)
       .eq("exam_id", batch.exam_id)
+      .eq("class_id", batch.class_id)
       .is("deleted_at", null)
       .maybeSingle();
     const manualSelectionAllowed = ["generated", "corrected", "review_required", "confirmed", "failed"].includes(selectedSheet?.status || "");
@@ -200,6 +210,7 @@ export async function POST(request: Request) {
             .select("id,exam_id,exam_version_id,student_id,status,manually_changed,purged_at,score,result_status")
             .eq("secure_token", result.secure_token)
             .eq("organization_id", organizationId)
+            .eq("class_id", batch.class_id)
             .is("deleted_at", null)
             .maybeSingle();
       const sheet = lookedUpSheet;

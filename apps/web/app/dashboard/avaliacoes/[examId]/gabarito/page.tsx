@@ -13,6 +13,12 @@ export default async function AnswerKeyPage({ params }: { params: Promise<{ exam
     .is("deleted_at", null)
     .single();
   if (!exam) return <main className="p-8">Avaliação não encontrada.</main>;
+  const { data: assignedClasses } = await supabase
+    .from("exam_classes")
+    .select("classes(name)")
+    .eq("exam_id", examId);
+  const classNames = assignedClasses?.map((item) => classNameFromRelation(item.classes)).filter((name) => name !== "Turma não informada");
+  const classLabel = classNames?.length ? classNames.join(", ") : classNameFromRelation(exam.classes);
   const { data: version } = await supabase.from("exam_versions").select("id,name,code").eq("exam_id", examId).eq("code", "A").single();
   const { data: questions } = version
     ? await supabase.from("exam_questions").select("question_number,correct_answer,score_value,is_cancelled").eq("exam_version_id", version.id).order("question_number")
@@ -32,7 +38,7 @@ export default async function AnswerKeyPage({ params }: { params: Promise<{ exam
     <main className="mx-auto max-w-4xl p-5 sm:p-8 lg:p-10">
       <Link href="/dashboard/avaliacoes" className="text-sm font-semibold text-primary">← Avaliações</Link>
       <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
-        <div><h1 className="text-3xl font-bold">Gabarito da avaliação</h1><p className="mt-2 text-muted-foreground">{exam.title} · Turma: {classNameFromRelation(exam.classes)} · {exam.subject}</p></div>
+        <div><h1 className="text-3xl font-bold">Gabarito da avaliação</h1><p className="mt-2 text-muted-foreground">{exam.title} · Turma(s): {classLabel} · {exam.subject}</p></div>
         <Link href={`/dashboard/avaliacoes/${examId}/cartoes`} className="inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm font-semibold hover:bg-surface">Ver cartões</Link>
       </div>
       <section className="mt-8 rounded-xl border border-border bg-background p-5 sm:p-6">

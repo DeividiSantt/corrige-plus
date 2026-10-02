@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   CheckCircleIcon,
   DownloadSimpleIcon,
@@ -15,6 +16,7 @@ import {
 import { initialStudentImportState } from "@/features/workspace/student-import-state";
 import {
   parseStudentFile,
+  parseStudentPdfText,
   type RejectedStudentRow,
   type StudentImportResult,
   type StudentImportRow,
@@ -26,11 +28,32 @@ type PreviewRow =
   | ({ kind: "valid" } & StudentImportRow)
   | ({ kind: "rejected" } & RejectedStudentRow);
 
-const supportedExtensions = [".xlsx", ".xls", ".csv"];
+const supportedExtensions = [".xlsx", ".xls", ".csv", ".pdf"];
 
 function extensionOf(fileName: string) {
   const dot = fileName.lastIndexOf(".");
   return dot >= 0 ? fileName.slice(dot).toLocaleLowerCase("pt-BR") : "";
+}
+
+async function extractPdfText(data: ArrayBuffer) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const document = await pdfjs.getDocument({ data: new Uint8Array(data) }).promise;
+  const pages: string[] = [];
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+    const content = await (await document.getPage(pageNumber)).getTextContent();
+    const lines = new Map<number, { x: number; text: string }[]>();
+    for (const item of content.items) {
+      if (!("str" in item) || !item.str.trim()) continue;
+      const x = item.transform[4];
+      const y = Math.round(item.transform[5]);
+      lines.set(y, [...(lines.get(y) || []), { x, text: item.str }]);
+    }
+    pages.push([...lines.entries()]
+      .sort(([first], [second]) => second - first)
+      .map(([, items]) => items.sort((first, second) => first.x - second.x).map((item) => item.text).join(" "))
+      .join("\n"));
+  }
+  return pages.join("\n");
 }
 
 function PreviewTable({ result }: { result: StudentImportResult }) {
@@ -112,6 +135,14 @@ export function StudentImporter({
   const [readError, setReadError] = useState("");
   const [selectedClassId, setSelectedClassId] = useState(defaultClassId);
   const readSequence = useRef(0);
+  const router = useRouter();
+
+  useEffect(() => {
+    if (actionState.status === "success" && selectedClassId) {
+      router.replace(`/dashboard/alunos?turma=${selectedClassId}`);
+      router.refresh();
+    }
+  }, [actionState, router, selectedClassId]);
 
   async function readFile(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -129,20 +160,23 @@ export function StudentImporter({
     setFileName(file.name);
     if (!supportedExtensions.includes(extensionOf(file.name))) {
       setReadStatus("invalid");
-      setReadError("Formato não aceito. Envie um arquivo XLSX, XLS ou CSV.");
+      setReadError("Formato não aceito. Envie um arquivo XLSX, XLS, CSV ou PDF com texto selecionável.");
       return;
     }
 
     setReadStatus("reading");
     try {
-      const parsed = parseStudentFile(await file.arrayBuffer(), file.name);
+      const data = await file.arrayBuffer();
+      const parsed = extensionOf(file.name) === ".pdf"
+        ? parseStudentPdfText(await extractPdfText(data), file.name)
+        : parseStudentFile(data, file.name);
       if (readSequence.current !== sequence) return;
       setResult(parsed);
 
       if (parsed.detectedHeaders.length === 0) {
         setReadStatus("invalid");
         setReadError(
-          "Não foi possível identificar as colunas da planilha. Use Nome, Matrícula e Número da chamada.",
+          "Não foi possível identificar alunos neste arquivo. Em PDF, use um arquivo com texto selecionável e alunos numerados.",
         );
       } else if (parsed.validStudents.length === 0) {
         setReadStatus("invalid");
@@ -156,7 +190,7 @@ export function StudentImporter({
       if (readSequence.current !== sequence) return;
       setReadStatus("error");
       setReadError(
-        "Não foi possível ler este arquivo. Envie uma planilha XLSX, XLS ou CSV válida.",
+        "Não foi possível ler este arquivo. Envie uma planilha válida ou um PDF com texto selecionável.",
       );
     }
   }
@@ -172,17 +206,17 @@ export function StudentImporter({
   const buttonLabel = pending
     ? "Importando…"
     : readStatus === "reading"
-      ? "Lendo planilha…"
+      ? "Lendo arquivo…"
       : payload.length > 0
         ? `Importar ${payload.length} aluno${payload.length === 1 ? "" : "s"}`
-        : "Selecionar planilha";
+        : "Selecionar arquivo";
 
   return (
     <form action={formAction} className="space-y-5 rounded-xl border bg-background p-5" noValidate>
       <div>
         <h2 className="text-lg font-bold">Importar alunos</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Use uma planilha do Excel ou CSV. Somente o nome é obrigatório.
+          Use uma planilha, CSV ou PDF textual. Somente o nome é obrigatório.
         </p>
       </div>
 
@@ -212,7 +246,7 @@ export function StudentImporter({
 
       <div className="space-y-2">
         <label htmlFor="student-import-file" className="text-sm font-semibold">
-          Planilha
+          Arquivo de alunos
         </label>
         <label
           htmlFor="student-import-file"
@@ -224,14 +258,14 @@ export function StudentImporter({
               {fileName || "Escolha um arquivo"}
             </span>
             <span className="mt-0.5 block text-sm text-muted-foreground">
-              XLSX, XLS ou CSV
+              XLSX, XLS, CSV ou PDF textual
             </span>
           </span>
         </label>
         <input
           id="student-import-file"
           type="file"
-          accept=".xlsx,.xls,.csv"
+          accept=".xlsx,.xls,.csv,.pdf,application/pdf"
           onChange={readFile}
           disabled={pending}
           className="sr-only"
@@ -249,7 +283,7 @@ export function StudentImporter({
 
       {readStatus === "reading" && (
         <div role="status" aria-live="polite" className="rounded-lg bg-info-soft p-3 text-sm">
-          Lendo planilha…
+          Lendo arquivo…
         </div>
       )}
 
