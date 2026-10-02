@@ -1,6 +1,7 @@
 # Leitura de cartões-resposta com OpenAI — especificação de design
 
-**Status:** design aprovado em conversa; aguardando revisão desta especificação antes do plano de implementação.  
+**Status:** design aprovado em conversa; aguardando revisão desta especificação antes do plano de implementação.
+
 **Data:** 2026-10-02
 
 ## Contexto e objetivo
