@@ -1,15 +1,31 @@
+import asyncio
+
 import cv2
 import numpy as np
+import pytest
 
 from app.pipeline.bubble_detection import _classify_fills, read_bubbles, read_bubbles_with_orientation_fallback
 from app.pipeline.config import PipelineConfig
-from app.pipeline.document_detection import detect_document, normalize_perspective
-from app.pipeline.image_quality import analyze_quality, decode_image
+from app.pipeline.document_detection import (
+    DocumentDetectionResult,
+    detect_document,
+    detect_document_detailed,
+    normalize_perspective,
+)
+from app.pipeline.image_quality import QualityResult, analyze_quality, decode_image
+from app.pipeline.qr_reader import QRReadResult
 
 
 def synthetic_card(config: PipelineConfig) -> np.ndarray:
     image = np.full((config.normalized_height, config.normalized_width, 3), 255, dtype=np.uint8)
     cv2.rectangle(image, (8, 8), (config.normalized_width - 8, config.normalized_height - 8), (0, 0, 0), 12)
+    return image
+
+
+def marker_card(config: PipelineConfig, marker_value: int = 170) -> np.ndarray:
+    image = np.full((config.normalized_height, config.normalized_width, 3), 215, dtype=np.uint8)
+    for x, y in config.geometry.marker_centers:
+        cv2.rectangle(image, (x - 20, y - 20), (x + 20, y + 20), (marker_value,) * 3, -1)
     return image
 
 
@@ -38,6 +54,228 @@ def test_document_detection_and_perspective() -> None:
     assert corners is not None
     normalized = normalize_perspective(image, corners, config)
     assert normalized.shape[:2] == (config.normalized_height, config.normalized_width)
+
+
+def test_weak_corner_markers_are_detected_without_a_dark_page_border() -> None:
+    config = PipelineConfig()
+    result = detect_document_detailed(marker_card(config), config)
+
+    assert result.status == "detected"
+    assert result.strategy == "markers"
+    assert result.corners is not None
+
+
+@pytest.mark.parametrize(
+    "rotation",
+    [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE],
+)
+def test_corner_markers_align_quarter_turn_photos(rotation: int) -> None:
+    config = PipelineConfig()
+    photographed = cv2.rotate(marker_card(config), rotation)
+    result = detect_document_detailed(photographed, config)
+
+    assert result.status == "detected"
+    assert result.strategy == "markers"
+    assert normalize_perspective(photographed, result.corners, config).shape[:2] == (
+        config.normalized_height,
+        config.normalized_width,
+    )
+
+
+def test_perspective_corner_markers_produce_validated_page_alignment() -> None:
+    config = PipelineConfig()
+    source = marker_card(config, marker_value=105)
+    source_points = np.float32(
+        [
+            [0, 0],
+            [config.normalized_width - 1, 0],
+            [config.normalized_width - 1, config.normalized_height - 1],
+            [0, config.normalized_height - 1],
+        ]
+    )
+    photo_points = np.float32([[145, 110], [2050, 40], [2140, 3420], [65, 3510]])
+    transform = cv2.getPerspectiveTransform(source_points, photo_points)
+    photographed = cv2.warpPerspective(source, transform, (2200, 3600), borderValue=(230, 230, 230))
+
+    result = detect_document_detailed(photographed, config)
+
+    assert result.status == "detected"
+    assert result.strategy == "markers"
+    normalized = normalize_perspective(photographed, result.corners, config)
+    assert normalized.shape[:2] == (config.normalized_height, config.normalized_width)
+
+
+def test_missing_markers_and_page_contour_reports_document_not_found() -> None:
+    config = PipelineConfig()
+    image = np.full((config.normalized_height, config.normalized_width, 3), 215, dtype=np.uint8)
+
+    result = detect_document_detailed(image, config)
+
+    assert result.status == "not_found"
+    assert result.corners is None
+
+
+def test_bad_marker_candidate_can_fall_back_to_valid_page_contour(monkeypatch) -> None:
+    import app.pipeline.document_detection as detection
+
+    config = PipelineConfig()
+    image = synthetic_card(config)
+    monkeypatch.setattr(
+        detection,
+        "_detect_marker_centers",
+        lambda _: np.zeros((4, 2), dtype=np.float32),
+    )
+
+    result = detection.detect_document_detailed(image, config)
+
+    assert result.status == "detected"
+    assert result.strategy == "contour"
+
+
+def test_invalid_geometry_is_rejected_before_bubble_reading(monkeypatch) -> None:
+    from app.pipeline import pipeline
+
+    config = PipelineConfig()
+    image = synthetic_card(config)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+
+    async def download(_: str) -> bytes:
+        return encoded.tobytes()
+
+    monkeypatch.setattr(pipeline, "_download_signed_image", download)
+    monkeypatch.setattr(
+        pipeline,
+        "read_qr_progressive",
+        lambda *_: pytest.fail("QR reading must wait until geometry is validated"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "detect_document_detailed",
+        lambda *_: DocumentDetectionResult("invalid_geometry", None, "markers"),
+    )
+
+    result = asyncio.run(
+        pipeline.process_signed_image("https://example.invalid/photo", 10, 5, config)
+    )
+
+    assert result["status"] == "resubmission_required"
+    assert result["error_code"] == "invalid_document_geometry"
+    assert result["answers"] == []
+    assert result["qr_read"] is None
+    assert result["processing_stages"]["qr"] == "not_attempted"
+    assert result["processing_stages"]["document_detection"] == "invalid_geometry"
+
+
+def test_process_reads_bubbles_when_qr_is_missing_and_document_is_aligned(monkeypatch) -> None:
+    from app.pipeline import pipeline
+
+    config = PipelineConfig()
+    image = synthetic_card(config)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+
+    async def download(_: str) -> bytes:
+        return encoded.tobytes()
+
+    qr = QRReadResult(
+        status="not_detected", token=None, strategy=None, detected=False,
+        decoded=False, content_length=None, bounding_box=None, attempts=1,
+        rotation_degrees=None, crop_coordinates=None,
+    )
+    monkeypatch.setattr(pipeline, "_download_signed_image", download)
+    monkeypatch.setattr(pipeline, "read_qr_progressive", lambda *args: qr)
+
+    result = asyncio.run(
+        pipeline.process_signed_image("https://example.invalid/photo", 10, 5, config)
+    )
+
+    assert result["status"] == "review_required"
+    assert result["error_code"] == "qr_not_detected"
+    assert len(result["answers"]) == 10
+    assert result["secure_token"] is None
+    assert result["processing_stages"]["document_detection"] == "detected"
+    assert result["processing_stages"]["normalization"] == "completed"
+
+
+def test_openai_reader_keeps_answers_without_qr_and_requires_review(monkeypatch) -> None:
+    from app.pipeline import pipeline
+    from app.pipeline.openai_reader import AIAnswer
+
+    config = PipelineConfig()
+    image = synthetic_card(config)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+
+    async def download(_: str) -> bytes:
+        return encoded.tobytes()
+
+    async def fake_reader(*_args, **_kwargs):
+        return [AIAnswer(1, "B", "answered", None, {}, (150, 900, 980, 980))]
+
+    qr = QRReadResult(
+        status="not_detected", token=None, strategy=None, detected=False,
+        decoded=False, content_length=None, bounding_box=None, attempts=1,
+        rotation_degrees=None, crop_coordinates=None,
+    )
+    monkeypatch.setattr(pipeline, "_download_signed_image", download)
+    monkeypatch.setattr(pipeline, "read_qr_progressive", lambda *args: qr)
+    monkeypatch.setattr(pipeline, "read_answers", fake_reader)
+    monkeypatch.setattr(
+        pipeline,
+        "read_bubbles_with_orientation_fallback",
+        lambda *_args, **_kwargs: pytest.fail("OpenAI mode must not treat OpenCV as the answer reader"),
+    )
+
+    result = asyncio.run(
+        pipeline.process_signed_image(
+            "https://example.invalid/photo",
+            1,
+            5,
+            config,
+            answer_reader="openai",
+            openai_api_key="test-key",
+        )
+    )
+
+    assert result["reader_source"] == "openai"
+    assert result["answers"][0]["detected_answer"] == "B"
+    assert result["answers"][0]["confidence"] is None
+    assert result["secure_token"] is None
+    assert result["review_required"] is True
+    assert result["processing_stages"]["answers"] == "read_by_openai"
+
+
+def test_blur_warning_does_not_prevent_bubble_reading_when_qr_is_missing(monkeypatch) -> None:
+    from app.pipeline import pipeline
+
+    config = PipelineConfig()
+    image = synthetic_card(config)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+
+    async def download(_: str) -> bytes:
+        return encoded.tobytes()
+
+    qr = QRReadResult(
+        status="not_detected", token=None, strategy=None, detected=False,
+        decoded=False, content_length=None, bounding_box=None, attempts=1,
+        rotation_degrees=None, crop_coordinates=None,
+    )
+    monkeypatch.setattr(pipeline, "_download_signed_image", download)
+    monkeypatch.setattr(pipeline, "read_qr_progressive", lambda *args: qr)
+    monkeypatch.setattr(
+        pipeline,
+        "analyze_quality",
+        lambda *_: QualityResult(180.0, 20.0, 5.0, ("blurred",)),
+    )
+
+    result = asyncio.run(
+        pipeline.process_signed_image("https://example.invalid/photo", 10, 5, config)
+    )
+
+    assert len(result["answers"]) == 10
+    assert result["processing_stages"]["image_quality"] == "warning"
 
 
 def test_blank_single_and_double_answers() -> None:

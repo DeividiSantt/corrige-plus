@@ -50,6 +50,16 @@ def test_decodes_valid_secure_token_from_known_crop() -> None:
     assert result.attempts > 0
 
 
+def test_decodes_secure_token_from_faded_low_contrast_qr() -> None:
+    config = PipelineConfig()
+    page = cv2.convertScaleAbs(card_with_qr(VALID_TOKEN, config), alpha=0.35, beta=135)
+
+    result = read_qr_progressive(np.full((160, 120, 3), 180, dtype=np.uint8), page, config)
+
+    assert result.status == "decoded"
+    assert result.token == VALID_TOKEN
+
+
 def test_rejects_decoded_content_outside_secure_token_format() -> None:
     config = PipelineConfig()
     page = card_with_qr("student-name-and-personal-data", config)

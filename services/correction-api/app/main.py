@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.services.storage import LocalTemporaryStorage
 from app.pipeline.config import PipelineConfig
 from app.pipeline.pipeline import process_signed_image
+from app.pipeline.openai_reader import OpenAIReaderError
 from app.pipeline.version import PIPELINE_VERSION
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ class ProcessSheetRequest(BaseModel):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or Settings.from_env()
+    if app_settings.answer_reader not in {"opencv", "openai"}:
+        raise ValueError("ANSWER_READER deve ser 'opencv' ou 'openai'.")
     storage = LocalTemporaryStorage(
         app_settings.temp_storage_path,
         retention_hours=app_settings.file_retention_hours,
@@ -139,7 +142,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 subject_blocks=payload.subject_blocks,
                 diagnostic_id=str(payload.processing_file_id),
+                answer_reader=app_settings.answer_reader,
+                openai_api_key=app_settings.openai_api_key,
+                openai_model=app_settings.openai_model,
+                openai_timeout_seconds=app_settings.openai_timeout_seconds,
             )
+        except OpenAIReaderError as exc:
+            logger.warning(
+                "OpenAI answer reading failed processing_file_id=%s code=%s",
+                payload.processing_file_id,
+                exc.code,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": exc.code,
+                    "message": "A leitura automática não foi concluída. Tente novamente ou revise o cartão.",
+                },
+            ) from exc
         except ValueError as exc:
             error_code = str(exc)
             logger.warning(

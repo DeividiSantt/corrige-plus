@@ -19,6 +19,7 @@ export const correctionErrorMessages: Record<string, string> = {
   qr_detected_not_decoded: "O QR Code foi localizado, mas não pôde ser lido. Tente outra foto ou identifique o aluno manualmente.",
   qr_invalid_format: "O conteúdo do QR Code não pertence ao formato seguro do CORRIGE+.",
   document_not_found: "Não foi possível localizar as bordas do cartão. Tire outra foto com os quatro cantos visíveis.",
+  invalid_document_geometry: "Os marcadores foram encontrados, mas a perspectiva do cartão não pôde ser validada. Tire outra foto com a folha inteira e sem inclinação excessiva.",
   INVALID_QR_TOKEN: "O QR Code foi lido, mas o cartão não foi encontrado nesta organização.",
   WRONG_EXAM: "Este cartão pertence a outra avaliação.",
   DUPLICATE_SHEET: "Já existe um cartão confirmado para este aluno e avaliação.",

@@ -34,6 +34,10 @@ class Settings:
     allowed_origins: tuple[str, ...]
     correction_api_key: str | None
     correction_debug_artifacts: bool = False
+    answer_reader: str = "opencv"
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-6.1-sol"
+    openai_timeout_seconds: int = 90
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -54,4 +58,8 @@ class Settings:
             allowed_origins=origins,
             correction_api_key=os.getenv("CORRECTION_API_KEY") or None,
             correction_debug_artifacts=_boolean("CORRECTION_DEBUG_ARTIFACTS"),
+            answer_reader=os.getenv("ANSWER_READER", "opencv").strip().lower(),
+            openai_api_key=os.getenv("OPENAI_API_KEY") or None,
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-6.1-sol").strip(),
+            openai_timeout_seconds=_positive_int("OPENAI_TIMEOUT_SECONDS", 90),
         )

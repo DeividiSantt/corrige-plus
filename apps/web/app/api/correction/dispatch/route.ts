@@ -24,6 +24,7 @@ type ReviewAnswer = {
   classification: string;
   detected_answer: string | null;
   fill_percentages: Record<string, number>;
+  reader_source?: "opencv" | "openai";
 };
 
 function reviewReason(answer: ReviewAnswer) {
@@ -226,10 +227,9 @@ export async function POST(request: Request) {
         if (!sheet) throw new Error("Inconsistent QR lookup state.");
         answerSheetId = sheet.id;
         if (selectedManualSheet) {
-          // QR errors no longer require review after a teacher explicitly
-          // chooses the student. Any uncertain bubbles still create review
-          // items through the normal flow below.
-          result.review_required = false;
+          // Manual identification resolves only who owns the card. OpenAI
+          // readings still require visual confirmation question by question.
+          result.review_required = result.reader_source === "openai";
           result.error_code = null;
           result.message = null;
         }
@@ -293,13 +293,17 @@ export async function POST(request: Request) {
             question_number: number;
             detected_answer: string | null;
             classification: string;
-            confidence: number;
+            confidence: number | null;
             fill_percentages: Record<string, number>;
             crop: [number, number, number, number];
           }) => {
             const question = questionMap.get(answer.question_number);
             let answerResult = "uncertain";
-            if (question?.is_cancelled) {
+            // OpenAI output is only a candidate until a teacher reviews it.
+            // Do not turn it into a correct/incorrect/blank mark or a score.
+            if (result.reader_source === "openai") {
+              answerResult = "uncertain";
+            } else if (question?.is_cancelled) {
               answerResult = "cancelled";
               invalidated += 1;
               score += Number(question.score_value);
@@ -332,8 +336,10 @@ export async function POST(request: Request) {
               fill_percentages: answer.fill_percentages,
               result: answerResult,
               classification: answer.classification,
-              classification_reason: answer.classification,
+              classification_reason:
+                result.reader_source === "openai" ? "openai_requires_human_review" : answer.classification,
               crop_coordinates: answer.crop,
+              reader_source: result.reader_source || "opencv",
             };
           },
         );
@@ -348,19 +354,19 @@ export async function POST(request: Request) {
           detectedRows.some((answer: { classification: string }) =>
             ["multiple", "low_confidence", "unreadable"].includes(answer.classification),
           );
-        const needsReview = allowAmbiguousResults
+        const needsReview = result.reader_source === "openai" || (allowAmbiguousResults
           ? !result.secure_token || detectedRows.some((answer: { classification: string }) => answer.classification === "unreadable")
-          : hasAmbiguousAnswers;
+          : hasAmbiguousAnswers);
         const { error: sheetUpdateError } = await supabase
           .from("answer_sheets")
           .update({
             status: needsReview ? "review_required" : "corrected",
             result_status: needsReview ? "review_required" : "corrected",
             purged_at: null,
-            score,
-            correct_answers: correct,
-            incorrect_answers: incorrect,
-            blank_answers: blank,
+            score: result.reader_source === "openai" ? null : score,
+            correct_answers: result.reader_source === "openai" ? null : correct,
+            incorrect_answers: result.reader_source === "openai" ? null : incorrect,
+            blank_answers: result.reader_source === "openai" ? null : blank,
             invalidated_answers: invalidated,
             review_required: needsReview,
             processed_at: new Date().toISOString(),
@@ -377,10 +383,10 @@ export async function POST(request: Request) {
           );
         }
         const pending = detectedRows
-          .filter((answer: { classification: string }) =>
-            ["multiple", "low_confidence", "unreadable"].includes(answer.classification),
+          .filter((answer: { classification: string; reader_source: string }) =>
+            answer.reader_source === "openai" || ["multiple", "low_confidence", "unreadable"].includes(answer.classification),
           )
-          .map((answer: ReviewAnswer & { question_number: number; confidence: number; crop_coordinates: unknown }) => ({
+          .map((answer: ReviewAnswer & { question_number: number; confidence: number | null; crop_coordinates: unknown }) => ({
             organization_id: organizationId,
             batch_id: batch.id,
             processing_file_id: file.id,
@@ -388,8 +394,10 @@ export async function POST(request: Request) {
             student_id: sheet.student_id,
             exam_id: batch.exam_id,
             question_number: answer.question_number,
-            issue_type: answer.classification,
-            reason: reviewReason(answer),
+            issue_type: answer.reader_source === "openai" ? "openai_review" : answer.classification,
+            reason: answer.reader_source === "openai"
+              ? "Leitura sugerida pela OpenAI. Confira visualmente a marcação antes de finalizar."
+              : reviewReason(answer),
             confidence: answer.confidence,
             crop_coordinates: answer.crop_coordinates,
           }));
@@ -440,10 +448,11 @@ export async function POST(request: Request) {
         algorithm_version: result.algorithm_version || null,
         qr_status: result.qr_read?.status || null,
         qr_strategy: result.qr_read?.strategy || null,
+        reader_source: result.reader_source || "opencv",
         error_code: result.error_code || null,
         error_message: result.message || null,
         answer_sheet_id: answerSheetId,
-        confidence: result.answers?.length
+        confidence: result.reader_source !== "openai" && result.answers?.length
           ? result.answers.reduce((sum: number, answer: { confidence: number }) => sum + answer.confidence, 0) /
             result.answers.length
           : null,

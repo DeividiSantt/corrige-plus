@@ -9,8 +9,9 @@ import httpx
 
 from app.pipeline.bubble_detection import read_bubbles_with_orientation_fallback
 from app.pipeline.config import PipelineConfig
-from app.pipeline.document_detection import detect_document, normalize_perspective
+from app.pipeline.document_detection import detect_document_detailed, normalize_perspective
 from app.pipeline.image_quality import analyze_quality, decode_image
+from app.pipeline.openai_reader import read_answers
 from app.pipeline.qr_reader import QRReadResult, qr_crop, read_qr_progressive
 from app.pipeline.version import PIPELINE_VERSION
 
@@ -103,38 +104,56 @@ async def process_signed_image(
     config: PipelineConfig,
     subject_blocks: list[dict] | None = None,
     diagnostic_id: str | None = None,
+    answer_reader: str = "opencv",
+    openai_api_key: str | None = None,
+    openai_model: str = "gpt-6.1-sol",
+    openai_timeout_seconds: int = 90,
 ) -> dict:
     image = decode_image(await _download_signed_image(signed_url))
     quality = analyze_quality(image, config)
-    initial_qr = read_qr_progressive(image, None, config)
-    blocking = {"invalid_image", "low_resolution", "too_dark", "too_bright"}
-    blocking_problem = next((problem for problem in quality.problems if problem in blocking), None)
-    blur_blocks = "blurred" in quality.problems and initial_qr.token is None
-    if blocking_problem or blur_blocks:
+    detection = detect_document_detailed(image, config)
+    stages = {
+        "image_quality": "warning" if quality.problems else "passed",
+        "document_detection": detection.status,
+        "normalization": "not_attempted",
+        "qr": "not_attempted",
+        "answers": "not_attempted",
+    }
+    if detection.status != "detected" or detection.corners is None:
         return {
             "status": "resubmission_required",
-            "secure_token": initial_qr.token,
-            "error_code": blocking_problem or "blurred",
+            "secure_token": None,
+            "error_code": (
+                "invalid_document_geometry"
+                if detection.status == "invalid_geometry"
+                else "document_not_found"
+            ),
             "review_required": False,
             "quality": asdict(quality),
-            "qr_read": asdict(initial_qr),
+            "qr_read": None,
             "answers": [],
+            "processing_stages": stages,
         }
-    corners = detect_document(image, config)
-    if corners is None:
+    try:
+        normalized = normalize_perspective(image, detection.corners, config)
+    except ValueError:
+        stages["document_detection"] = "invalid_geometry"
+        stages["normalization"] = "failed"
         return {
             "status": "resubmission_required",
-            "secure_token": initial_qr.token,
-            "error_code": "document_not_found",
+            "secure_token": None,
+            "error_code": "invalid_document_geometry",
             "review_required": False,
             "quality": asdict(quality),
-            "qr_read": asdict(initial_qr),
+            "qr_read": None,
             "answers": [],
+            "processing_stages": stages,
         }
-    normalized = normalize_perspective(image, corners, config)
+    stages["normalization"] = "completed"
     qr_result = read_qr_progressive(image, normalized, config)
-    # Veja o comentário na pré-leitura: a rotação do QR não deve girar a
-    # página normalizada, pois um QR pode ser lido após uma rotação auxiliar.
+    stages["qr"] = qr_result.status
+    # A rotação auxiliar usada para tentar ler o QR não deve girar a página
+    # normalizada antes da leitura das bolhas.
     oriented = normalized
     if oriented.shape[:2] != (config.normalized_height, config.normalized_width):
         oriented = cv2.resize(
@@ -142,15 +161,32 @@ async def process_signed_image(
             (config.normalized_width, config.normalized_height),
             interpolation=cv2.INTER_AREA,
         )
-    answers, bubble_rotation_degrees = read_bubbles_with_orientation_fallback(
-        oriented,
-        total_questions,
-        alternatives_count,
-        config,
-        subject_blocks,
-    )
+    if answer_reader == "openai":
+        answers = await read_answers(
+            oriented,
+            total_questions,
+            alternatives_count,
+            config,
+            api_key=openai_api_key,
+            model=openai_model,
+            timeout_seconds=openai_timeout_seconds,
+            subject_blocks=subject_blocks,
+        )
+        bubble_rotation_degrees = None
+        stages["answers"] = "read_by_openai"
+    elif answer_reader == "opencv":
+        answers, bubble_rotation_degrees = read_bubbles_with_orientation_fallback(
+            oriented,
+            total_questions,
+            alternatives_count,
+            config,
+            subject_blocks,
+        )
+        stages["answers"] = "read_by_opencv"
+    else:
+        raise ValueError("unsupported_answer_reader")
     qr_error = QR_ERROR_CODES.get(qr_result.status)
-    review_required = qr_result.token is None or any(
+    review_required = answer_reader == "openai" or qr_result.token is None or any(
         item.classification in {"multiple", "low_confidence", "unreadable"} for item in answers
     )
     _save_debug_artifacts(image, normalized, qr_result, config, diagnostic_id)
@@ -171,7 +207,9 @@ async def process_signed_image(
         "quality": asdict(quality),
         "qr_read": asdict(qr_result),
         "layout_version": config.layout_version,
-        "algorithm_version": PIPELINE_VERSION,
+        "algorithm_version": "openai-vision-v1" if answer_reader == "openai" else PIPELINE_VERSION,
+        "reader_source": answer_reader,
         "bubble_rotation_degrees": bubble_rotation_degrees,
         "answers": [asdict(item) for item in answers],
+        "processing_stages": stages,
     }
