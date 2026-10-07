@@ -17,10 +17,11 @@ import {
   ACCEPTED_IMAGE_TYPES,
   ANSWER_SHEET_BUCKET,
   formatFileSize,
+  hasMinimumImageResolution,
   MAX_FILES_PER_BATCH,
   MAX_FILE_SIZE_BYTES,
-  MIN_IMAGE_HEIGHT,
-  MIN_IMAGE_WIDTH,
+  MIN_ACCEPTED_IMAGE_HEIGHT,
+  MIN_ACCEPTED_IMAGE_WIDTH,
 } from "./config";
 
 type ExamOption = {
@@ -72,8 +73,8 @@ async function validateFile(file: File) {
   if (file.size > MAX_FILE_SIZE_BYTES) return "Esta imagem ultrapassa o limite de 12 MB.";
   try {
     const dimensions = await imageDimensions(file);
-    if (dimensions.width < MIN_IMAGE_WIDTH || dimensions.height < MIN_IMAGE_HEIGHT) {
-      return `A resolução é muito baixa. Use pelo menos ${MIN_IMAGE_WIDTH} × ${MIN_IMAGE_HEIGHT} px.`;
+    if (!hasMinimumImageResolution(dimensions.width, dimensions.height)) {
+      return `A resolução é muito baixa. Use pelo menos ${MIN_ACCEPTED_IMAGE_WIDTH} × ${MIN_ACCEPTED_IMAGE_HEIGHT} px.`;
     }
   } catch (error) {
     return error instanceof Error ? error.message : "O arquivo não é uma imagem válida.";

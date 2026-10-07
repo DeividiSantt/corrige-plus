@@ -16,7 +16,7 @@ function reviewExplanation(
     .sort(([, first], [, second]) => second - first);
   const [first, second] = ranked;
   const percentage = (value: number) => `${Math.round(value * 100)}%`;
-  if (issueType === "low_confidence" && first && second) {
+  if ((issueType === "uncertain" || issueType === "low_confidence") && first && second) {
     return `Leitura ambígua: ${first[0]} ${percentage(first[1])} × ${second[0]} ${percentage(second[1])}. Revise antes de finalizar.`;
   }
   if (issueType === "multiple" && first && second) {

@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -14,11 +15,50 @@ from app.pipeline.document_detection import (
 )
 from app.pipeline.image_quality import QualityResult, analyze_quality, decode_image
 from app.pipeline.qr_reader import QRReadResult
+from app.pipeline.layout_profiles import build_bubble_positions, get_layout_profile
 
 
-def synthetic_card(config: PipelineConfig) -> np.ndarray:
-    image = np.full((config.normalized_height, config.normalized_width, 3), 255, dtype=np.uint8)
+SUBJECT_BLOCKS = [
+    {"start_question_number": 1, "end_question_number": 10},
+    {"start_question_number": 11, "end_question_number": 20},
+    {"start_question_number": 21, "end_question_number": 30},
+    {"start_question_number": 31, "end_question_number": 40},
+]
+
+
+def synthetic_card(
+    config: PipelineConfig,
+    total_questions: int = 50,
+    subject_blocks: list[dict] | None = None,
+) -> np.ndarray:
+    image = np.full((config.normalized_height, config.normalized_width, 3), (205, 225, 225), dtype=np.uint8)
     cv2.rectangle(image, (8, 8), (config.normalized_width - 8, config.normalized_height - 8), (0, 0, 0), 12)
+    for center_x, center_y in config.geometry.marker_centers:
+        cv2.rectangle(image, (center_x - 20, center_y - 20), (center_x + 20, center_y + 20), (0, 0, 0), -1)
+    positions = build_bubble_positions(total_questions, 5, config, subject_blocks)
+    profile = get_layout_profile(config.profile_id)
+    radius = (
+        round(
+            (profile.normalized_bubble_radius[0] * config.normalized_width
+             + profile.normalized_bubble_radius[1] * config.normalized_height) / 2
+        )
+        if profile.normalized_bubble_radius is not None
+        else round(3.3 * config.px_per_mm)
+    )
+    for _, options in positions:
+        for option, (center_x_mm, center_y_mm) in options.items():
+            center = (round(center_x_mm * config.px_per_mm), round(center_y_mm * config.px_per_mm))
+            cv2.circle(image, center, radius, (90, 90, 90), 2)
+            cv2.putText(
+                image,
+                option,
+                (center[0] - round(1.6 * config.px_per_mm), center[1] + round(1.2 * config.px_per_mm)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (70, 70, 70),
+                1,
+                cv2.LINE_AA,
+            )
     return image
 
 
@@ -29,11 +69,20 @@ def marker_card(config: PipelineConfig, marker_value: int = 170) -> np.ndarray:
     return image
 
 
-def mark(image: np.ndarray, question: int, option: int, config: PipelineConfig) -> None:
-    scale = config.px_per_mm
-    x = int((config.first_bubble_x_mm + option * config.bubble_spacing_x_mm) * scale)
-    y = int((config.question_start_y_mm + (question - 1) * config.question_spacing_y_mm) * scale)
-    cv2.circle(image, (x, y), int(config.bubble_radius_mm * scale) - 4, (0, 0, 0), -1)
+def mark(
+    image: np.ndarray,
+    question: int,
+    option: int,
+    config: PipelineConfig,
+    total_questions: int = 50,
+    subject_blocks: list[dict] | None = None,
+    color: tuple[int, int, int] = (15, 15, 15),
+) -> None:
+    _, centers = build_bubble_positions(total_questions, 5, config, subject_blocks)[question - 1]
+    x_mm, y_mm = centers["ABCDE"[option]]
+    x = int(round(x_mm * config.px_per_mm))
+    y = int(round(y_mm * config.px_per_mm))
+    cv2.circle(image, (x, y), int(round(1.8 * config.px_per_mm)), color, -1)
 
 
 def test_valid_image_quality_and_decode() -> None:
@@ -253,22 +302,22 @@ def test_answer_safety_policy_accepts_clear_marks_and_flags_uncertain_ones() -> 
     config = PipelineConfig()
 
     clear_classification, clear_answer, _ = _classify_fills(
-        {"A": 0.60, "B": 0.38, "C": 0.02, "D": 0.01, "E": 0.01}, config
+        {"A": 0.68, "B": 0.10, "C": 0.02, "D": 0.01, "E": 0.01}, config
     )
     assert (clear_classification, clear_answer) == ("answered", "A")
 
     ambiguous_classification, ambiguous_answer, _ = _classify_fills(
-        {"A": 0.51, "B": 0.47, "C": 0.02, "D": 0.01, "E": 0.01}, config
+        {"A": 0.30, "B": 0.27, "C": 0.02, "D": 0.01, "E": 0.01}, config
     )
-    assert (ambiguous_classification, ambiguous_answer) == ("low_confidence", "A")
+    assert (ambiguous_classification, ambiguous_answer) == ("uncertain", None)
 
     double_classification, double_answer, _ = _classify_fills(
-        {"A": 0.66, "B": 0.63, "C": 0.01, "D": 0.01, "E": 0.01}, config
+        {"A": 0.66, "B": 0.58, "C": 0.01, "D": 0.01, "E": 0.01}, config
     )
     assert (double_classification, double_answer) == ("multiple", None)
 
     blank_classification, blank_answer, _ = _classify_fills(
-        {"A": 0.12, "B": 0.10, "C": 0.08, "D": 0.06, "E": 0.04}, config
+        {"A": 0.08, "B": 0.07, "C": 0.06, "D": 0.05, "E": 0.04}, config
     )
     assert (blank_classification, blank_answer) == ("blank", None)
 
@@ -317,3 +366,145 @@ def test_orientation_fallback_does_not_fail_when_the_rotated_grid_is_too_tall() 
     answers, _ = read_bubbles_with_orientation_fallback(image, 50, 5, config)
 
     assert len(answers) == 50
+
+
+def test_layout_profile_resolves_fixed_coordinates_for_compact_and_subject_cards() -> None:
+    compact = PipelineConfig(layout_profile_id="corrige-plus-v1")
+    compact_positions = build_bubble_positions(10, 5, compact)
+    assert compact_positions[0][0].center_x_mm == 28.0
+    assert compact_positions[0][0].center_y_mm == 92.0
+    assert compact_positions[9][0].center_y_mm == pytest.approx(156.8)
+
+    subject = PipelineConfig(
+        layout_version="corrige-plus-v2-subject-blocks",
+        layout_profile_id="corrige-plus-v2-subject-blocks",
+    )
+    subject_positions = build_bubble_positions(40, 5, subject, SUBJECT_BLOCKS)
+    assert subject_positions[0][1]["A"] == pytest.approx((0.0757 * 210, 0.32564 * 297))
+    assert subject_positions[10][1]["A"] == pytest.approx((0.0757 * 210, 0.62586 * 297))
+    assert subject_positions[20][1]["A"] == pytest.approx((0.59665 * 210, 0.32564 * 297))
+    assert subject_positions[30][1]["A"] == pytest.approx((0.59665 * 210, 0.62586 * 297))
+
+
+def test_two_column_40_question_profile_matches_reference_pdf_geometry() -> None:
+    # Vector coordinates measured from cartoes-resposta (4).pdf. Keep the
+    # source PDF out of the test runtime so the regression remains portable.
+    config = PipelineConfig(layout_profile_id="corrige-plus-v1")
+    positions = build_bubble_positions(40, 5, config)
+    expected_question_centers = {
+        1: (28.0, 92.0),
+        20: (28.0, 228.8),
+        21: (122.0, 92.0),
+        40: (122.0, 228.8),
+    }
+
+    for question_number, expected in expected_question_centers.items():
+        position, options = positions[question_number - 1]
+        assert (position.center_x_mm, position.center_y_mm) == pytest.approx(expected)
+        assert options["A"] == pytest.approx((expected[0], expected[1]))
+        assert options["E"] == pytest.approx((expected[0] + 56.0, expected[1]))
+
+    profile = get_layout_profile(config.profile_id)
+    assert profile.bubble_spacing_x_mm == pytest.approx(14.0)
+    assert profile.question_spacing_y_mm == pytest.approx(7.2)
+    assert profile.bubble_radius_mm == pytest.approx(3.3)
+
+
+def test_two_column_40_question_profile_reads_answers_in_both_columns() -> None:
+    config = PipelineConfig(layout_profile_id="corrige-plus-v1")
+    expected = list("ABCDE" * 8)
+    image = synthetic_card(config, total_questions=40)
+    for question, answer in enumerate(expected, start=1):
+        mark(image, question, "ABCDE".index(answer), config, total_questions=40)
+
+    answers = read_bubbles(image, 40, 5, config)
+
+    assert [answer.detected_answer for answer in answers] == expected
+    assert all(answer.classification == "answered" for answer in answers)
+
+
+def test_reader_profile_geometry_stays_aligned_with_pdf_renderer_source() -> None:
+    renderer = (
+        Path(__file__).resolve().parents[3]
+        / "apps"
+        / "web"
+        / "features"
+        / "workspace"
+        / "answer-sheet-pdf.tsx"
+    ).read_text(encoding="utf-8")
+    for source_fragment in (
+        "const width = 210; const margin = 14;",
+        "const answerStartYByColumn = hasSubjectBlocks ? [99.2, 92] : [92, 92];",
+        "exam.questions > 25 ? 2 : 1",
+        "21: { labelX: 114, centerY: 102 },",
+        "31: { labelX: 108, centerY: 184 },",
+        "const bubbleStartX = hasSubjectBlocks ? centerXByColumn[column] : x + 14;",
+        "currentY[column] += 10;",
+        "answerStartYByColumn[column] + position * 7.2",
+        "bubbleStartX + optionIndex * 14",
+        "pdf.circle(bubbleX, y, 3.3)",
+    ):
+        assert source_fragment in renderer
+
+
+def test_subject_block_profile_reads_each_column_from_its_known_rois() -> None:
+    config = PipelineConfig(
+        layout_version="corrige-plus-v2-subject-blocks",
+        layout_profile_id="corrige-plus-v2-subject-blocks",
+    )
+    expected = ["A", "B", "C", "D", "E"] * 8
+    image = synthetic_card(config, 40, SUBJECT_BLOCKS)
+    for question, answer in enumerate(expected, start=1):
+        mark(
+            image,
+            question,
+            "ABCDE".index(answer),
+            config,
+            total_questions=40,
+            subject_blocks=SUBJECT_BLOCKS,
+        )
+
+    answers = read_bubbles(image, 40, 5, config, SUBJECT_BLOCKS)
+
+    assert [answer.detected_answer for answer in answers] == expected
+    assert all(answer.classification == "answered" for answer in answers)
+
+
+def test_chs_profile_uses_normalized_json_coordinates_at_2100_by_2970() -> None:
+    config = PipelineConfig(
+        layout_version="corrige-plus-v2-subject-blocks",
+        layout_profile_id="corrige-plus-v2-subject-blocks",
+    )
+    positions = build_bubble_positions(40, 5, config, SUBJECT_BLOCKS)
+
+    # Coordinates are resolution-independent fractions from corrige_geometry.json.
+    assert positions[0][1]["A"] == pytest.approx((0.0757 * 210, 0.32564 * 297))
+    assert positions[22][1]["A"] == pytest.approx((0.59665 * 210, 0.37864 * 297))
+    assert positions[39][1]["E"] == pytest.approx((0.91065 * 210, 0.86393 * 297))
+
+
+def test_chs_profile_blank_card_returns_all_questions_blank() -> None:
+    config = PipelineConfig(
+        layout_version="corrige-plus-v2-subject-blocks",
+        layout_profile_id="corrige-plus-v2-subject-blocks",
+    )
+    image = synthetic_card(config, 40, SUBJECT_BLOCKS)
+
+    answers = read_bubbles(image, 40, 5, config, SUBJECT_BLOCKS)
+
+    assert len(answers) == 40
+    assert all(answer.classification == "blank" for answer in answers)
+    assert all(answer.detected_answer is None for answer in answers)
+    _, first_question_centers = build_bubble_positions(40, 5, config, SUBJECT_BLOCKS)[0]
+    assert answers[0].crop[2] >= round(first_question_centers["E"][0] * config.px_per_mm)
+
+
+def test_blue_pen_marks_are_detected_against_tinted_paper() -> None:
+    config = PipelineConfig()
+    image = synthetic_card(config)
+    mark(image, 1, 3, config, color=(150, 35, 20))
+
+    answers = read_bubbles(image, 10, 5, config)
+
+    assert answers[0].classification == "answered"
+    assert answers[0].detected_answer == "D"

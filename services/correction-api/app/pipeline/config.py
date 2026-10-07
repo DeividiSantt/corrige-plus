@@ -38,6 +38,9 @@ LAYOUT_GEOMETRIES = {
 @dataclass(frozen=True, slots=True)
 class PipelineConfig:
     layout_version: str = "corrige-plus-v1"
+    # The profile is supplied by trusted evaluation metadata. If omitted for
+    # backward compatibility, the existing layout_version is the profile ID.
+    layout_profile_id: str | None = None
     # Temporariamente desativado para calibração com fotos reduzidas.
     # Reativar com valores mínimos antes de publicar o serviço.
     min_width: int | None = None
@@ -48,24 +51,16 @@ class PipelineConfig:
     # permitem ler o QR e as bolhas. Valores muito altos bloqueiam a etapa de
     # perspectiva antes que os marcadores sejam usados.
     min_blur_variance: float = 20.0
-    bubble_mark_threshold: float = 0.55
-    bubble_blank_threshold: float = 0.30
-    bubble_darkness_ratio: float = 0.67
-    dominance_margin: float = 0.12
-    double_mark_margin: float = 0.06
-    min_confidence: float = 0.62
-    question_start_y_mm: float = 92.0
-    question_spacing_y_mm: float = 7.2
-    column_spacing_mm: float = 94.0
-    first_bubble_x_mm: float = 28.0
-    bubble_spacing_x_mm: float = 14.0
-    bubble_radius_mm: float = 2.35
+    bubble_mark_threshold: float = 0.25
+    bubble_multiple_threshold: float = 0.38
+    bubble_blank_threshold: float = 0.12
+    dominance_margin: float = 0.10
     debug_artifacts: bool = False
 
     @property
     def geometry(self) -> LayoutGeometry:
         try:
-            return LAYOUT_GEOMETRIES[self.layout_version]
+            return LAYOUT_GEOMETRIES[self.profile_id]
         except KeyError as exc:
             raise ValueError("UNSUPPORTED_LAYOUT") from exc
 
@@ -80,3 +75,7 @@ class PipelineConfig:
     @property
     def px_per_mm(self) -> float:
         return self.normalized_width / 210.0
+
+    @property
+    def profile_id(self) -> str:
+        return self.layout_profile_id or self.layout_version

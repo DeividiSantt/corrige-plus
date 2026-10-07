@@ -1,1 +1,1 @@
-PIPELINE_VERSION = "opencv-v0.2"
+PIPELINE_VERSION = "opencv-omr-v1.0"

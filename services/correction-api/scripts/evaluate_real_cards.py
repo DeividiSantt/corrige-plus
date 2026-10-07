@@ -14,10 +14,9 @@ from pathlib import Path
 
 import cv2
 
-from app.pipeline.bubble_detection import read_bubbles_with_orientation_fallback
+from app.pipeline.bubble_detection import read_bubbles
 from app.pipeline.config import PipelineConfig
-from app.pipeline.document_detection import detect_document, normalize_perspective, rotate_quarter_turns
-from app.pipeline.qr_reader import read_qr_progressive
+from app.pipeline.document_detection import detect_document_detailed, normalize_perspective
 
 
 def main() -> None:
@@ -42,16 +41,15 @@ def main() -> None:
         if image is None:
             print(f"{photo.name} | não lida | - | - | - | -")
             continue
-        corners = detect_document(image, config)
-        if corners is None:
+        detection = detect_document_detailed(image, config)
+        if detection.corners is None or detection.strategy != "markers":
             print(f"{photo.name} | não | 0 | {len(expected)} | - | {'-' * len(expected)}")
             totals["blank"] += len(expected)
             totals["questions"] += len(expected)
             continue
-        normalized = normalize_perspective(image, corners, config)
-        qr = read_qr_progressive(image, normalized, config)
-        answers, rotation = read_bubbles_with_orientation_fallback(
-            rotate_quarter_turns(normalized, qr.rotation_degrees or 0),
+        normalized = normalize_perspective(image, detection.corners, config)
+        answers = read_bubbles(
+            normalized,
             len(expected),
             5,
             config,
@@ -60,8 +58,7 @@ def main() -> None:
         read = sum(answer.detected_answer is not None for answer in answers)
         blank = sum(answer.classification == "blank" for answer in answers)
         wrong = sum(answer.detected_answer != expected[index] for index, answer in enumerate(answers))
-        suffix = f" · rotação da grade {rotation}°" if rotation else ""
-        print(f"{photo.name} | sim | {read} | {blank} | {wrong} | {received}{suffix}")
+        print(f"{photo.name} | sim | {read} | {blank} | {wrong} | {received}")
         totals["read"] += read
         totals["blank"] += blank
         totals["wrong"] += wrong

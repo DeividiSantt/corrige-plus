@@ -12,16 +12,15 @@ Uso:
 from __future__ import annotations
 
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from app.pipeline.bubble_detection import read_bubbles, read_bubbles_with_orientation_fallback
+from app.pipeline.bubble_detection import read_bubbles
 from app.pipeline.config import PipelineConfig
-from app.pipeline.document_detection import detect_document, normalize_perspective, rotate_quarter_turns
-from app.pipeline.qr_reader import read_qr_progressive
+from app.pipeline.document_detection import detect_document, normalize_perspective
+from app.pipeline.layout_profiles import build_bubble_positions, get_layout_profile
 
 
 SUBJECT_BLOCKS = [
@@ -39,13 +38,13 @@ def format_block(answers: list, block: dict) -> str:
     marks = "".join(answer.detected_answer or "-" for answer in current)
     counts = {
         "answer": sum(answer.classification == "answered" for answer in current),
-        "low": sum(answer.classification == "low_confidence" for answer in current),
+        "uncertain": sum(answer.classification == "uncertain" for answer in current),
         "multiple": sum(answer.classification == "multiple" for answer in current),
         "blank": sum(answer.classification == "blank" for answer in current),
     }
     return (
         f"  {block['subject']:<10} {marks} "
-        f"(respondidas={counts['answer']}, baixa={counts['low']}, "
+        f"(respondidas={counts['answer']}, incertas={counts['uncertain']}, "
         f"múltiplas={counts['multiple']}, brancas={counts['blank']})"
     )
 
@@ -62,20 +61,14 @@ def inspect(photo: Path, config: PipelineConfig, debug_dir: Path | None) -> None
         return
 
     normalized = normalize_perspective(image, corners, config)
-    qr = read_qr_progressive(image, normalized, config)
-    oriented = rotate_quarter_turns(normalized, qr.rotation_degrees or 0)
-    answers, bubble_rotation = read_bubbles_with_orientation_fallback(
-        oriented,
+    answers = read_bubbles(
+        normalized,
         total_questions=40,
         alternatives_count=5,
         config=config,
         subject_blocks=SUBJECT_BLOCKS,
     )
-    print(
-        "  QR="
-        f"{qr.status} | decodificado={'sim' if qr.decoded else 'não'} | "
-        f"rotação QR={qr.rotation_degrees or 0}° | rotação bolhas={bubble_rotation}°"
-    )
+    print(f"  perfil={config.profile_id} | rotação das bolhas=0° (normalização pelos marcadores)")
     for block in SUBJECT_BLOCKS:
         print(format_block(answers, block))
         start = int(block["start_question_number"]) - 1
@@ -87,44 +80,43 @@ def inspect(photo: Path, config: PipelineConfig, debug_dir: Path | None) -> None
         print(f"    preenchimento máximo: {strengths}")
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
-        overlay = oriented.copy()
-        for answer in answers:
-            x1, y1, x2, y2 = answer.crop
+        overlay = normalized.copy()
+        profile = get_layout_profile(config.profile_id)
+        bubble_radius = round(
+            (profile.normalized_bubble_radius[0] * config.normalized_width
+             + profile.normalized_bubble_radius[1] * config.normalized_height) / 2
+        )
+        for answer, (_, option_centers) in zip(
+            answers,
+            build_bubble_positions(40, 5, config, SUBJECT_BLOCKS),
+            strict=True,
+        ):
             color = (0, 180, 0) if answer.detected_answer else (0, 0, 230)
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+            for center_x_mm, center_y_mm in option_centers.values():
+                point = (
+                    round(center_x_mm * config.px_per_mm),
+                    round(center_y_mm * config.px_per_mm),
+                )
+                cv2.circle(overlay, point, bubble_radius, color, 2)
+                cv2.drawMarker(overlay, point, (0, 255, 255), cv2.MARKER_CROSS, 11, 2)
+            first_center = next(iter(option_centers.values()))
+            label = (
+                round(first_center[0] * config.px_per_mm - bubble_radius),
+                round(first_center[1] * config.px_per_mm - bubble_radius - 5),
+            )
+            cv2.putText(
+                overlay,
+                f"{answer.question_number}:{answer.detected_answer or '-'}",
+                label,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
         output = debug_dir / f"{photo.stem}-grade.png"
         cv2.imwrite(str(output), overlay)
         print(f"  grade de referência: {output}")
-
-
-def calibrate_offsets(photo: Path, config: PipelineConfig) -> None:
-    """Compara deslocamentos da grade sem alterar a configuração do serviço."""
-    image = cv2.imread(str(photo))
-    if image is None:
-        return
-    corners = detect_document(image, config)
-    if corners is None:
-        return
-    normalized = normalize_perspective(image, corners, config)
-    qr = read_qr_progressive(image, normalized, config)
-    oriented = rotate_quarter_turns(normalized, qr.rotation_degrees or 0)
-    candidates: list[tuple[float, float, float]] = []
-    for x_offset in range(-8, 9):
-        for y_offset in range(-12, 21):
-            candidate_config = replace(
-                config,
-                first_bubble_x_mm=config.first_bubble_x_mm + x_offset,
-                question_start_y_mm=config.question_start_y_mm + y_offset,
-            )
-            answers = read_bubbles(oriented, 40, 5, candidate_config, SUBJECT_BLOCKS)
-            # Em uma folha preenchida, uma bolha escura deve aparecer em cada
-            # linha. O peso abaixo prioriza marcas realmente distintas, não os
-            # contornos das bolhas vazias.
-            score = sum(max(answer.fill_percentages.values()) for answer in answers)
-            candidates.append((score, x_offset, y_offset))
-    print("  melhores deslocamentos candidatos (x, y, pontuação):")
-    for score, x_offset, y_offset in sorted(candidates, reverse=True)[:8]:
-        print(f"    x={x_offset:+} mm | y={y_offset:+} mm | {score:.2f}/40")
 
 
 def _clusters(values: list[int], distance: int = 18) -> list[int]:
@@ -175,9 +167,7 @@ def inspect_circles(photo: Path, config: PipelineConfig) -> None:
 def main() -> None:
     args = sys.argv[1:]
     debug_dir: Path | None = None
-    calibration = False
     circles = False
-    legacy_grid = False
     if "--debug-dir" in args:
         index = args.index("--debug-dir")
         try:
@@ -185,33 +175,18 @@ def main() -> None:
         except IndexError as error:
             raise SystemExit("Informe a pasta após --debug-dir.") from error
         del args[index:index + 2]
-    if "--calibrate" in args:
-        args.remove("--calibrate")
-        calibration = True
     if "--circles" in args:
         args.remove("--circles")
         circles = True
-    if "--legacy-grid" in args:
-        args.remove("--legacy-grid")
-        legacy_grid = True
     if not args:
         raise SystemExit("Informe ao menos uma foto JPG, JPEG ou PNG.")
 
-    config = PipelineConfig(layout_version="corrige-plus-v2-subject-blocks")
-    if legacy_grid:
-        # Modelo multidisciplinar emitido antes do alinhamento final do PDF.
-        # Mantido aqui apenas para medir a compatibilidade antes de entrar no
-        # fallback do serviço.
-        config = replace(
-            config,
-            first_bubble_x_mm=35.0,
-            column_spacing_mm=88.5,
-            question_start_y_mm=97.0,
-        )
+    config = PipelineConfig(
+        layout_version="corrige-plus-v2-subject-blocks",
+        layout_profile_id="corrige-plus-v2-subject-blocks",
+    )
     for source in (Path(value) for value in args):
         inspect(source, config, debug_dir)
-        if calibration:
-            calibrate_offsets(source, config)
         if circles:
             inspect_circles(source, config)
 

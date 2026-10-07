@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 PROCESSING_INPUT_MESSAGES = {
     "signed_image_download_unavailable": "Não foi possível baixar a foto temporária. Tente reprocessar o cartão.",
     "signed_image_download_failed": "O link temporário da foto não está mais disponível. Envie uma nova foto.",
+    "fiducials_not_found": "Os quatro marcadores do cartão não foram identificados com segurança. Envie uma nova foto mostrando a folha inteira.",
+    "INVALID_SUBJECT_BLOCKS": "A organização dos blocos não corresponde às questões desta avaliação.",
+    "LAYOUT_PROFILE_MISMATCH": "O perfil de leitura não corresponde ao layout do cartão.",
 }
 
 
@@ -51,6 +54,7 @@ class ProcessSheetRequest(BaseModel):
     storage_key: str = Field(min_length=10, max_length=500)
     signed_url: HttpUrl
     layout_version: str = "corrige-plus-v1"
+    layout_profile_id: str | None = None
     total_questions: int = Field(ge=1, le=50)
     alternatives_count: int = Field(ge=2, le=5)
     subject_blocks: list[dict[str, int | str]] = Field(default_factory=list)
@@ -120,7 +124,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/v1/process-sheet", tags=["correction"])
     async def process_sheet(payload: ProcessSheetRequest, _: None = Depends(require_api_key)) -> dict:
-        if payload.layout_version not in {"corrige-plus-v1", "corrige-plus-v2-subject-blocks"}:
+        supported_layouts = {"corrige-plus-v1", "corrige-plus-v2-subject-blocks"}
+        profile_id = payload.layout_profile_id or payload.layout_version
+        if (
+            payload.layout_version not in supported_layouts
+            or profile_id not in supported_layouts
+            or profile_id != payload.layout_version
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={"code": "UNSUPPORTED_LAYOUT", "message": "Versão do cartão não suportada."},
@@ -132,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload.alternatives_count,
                 PipelineConfig(
                     layout_version=payload.layout_version,
+                    layout_profile_id=profile_id,
                     debug_artifacts=(
                         app_settings.correction_debug_artifacts
                         and app_settings.app_env.lower() == "development"

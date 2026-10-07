@@ -29,7 +29,7 @@ def test_health_reports_real_service_state(tmp_path: Path) -> None:
     assert response.json()["storage_backend"] == "local"
     assert response.json()["retention_hours"] == 24
     assert response.json()["service"] == "corrige-plus-correction-api"
-    assert response.json()["pipeline_version"] == "opencv-v0.2"
+    assert response.json()["pipeline_version"] == "opencv-omr-v1.0"
     assert response.json()["opencv_version"]
 
 

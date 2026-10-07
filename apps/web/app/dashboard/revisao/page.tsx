@@ -3,6 +3,7 @@ import { workspaceData } from "@/features/workspace/data";
 
 const issueLabels: Record<string, string> = {
   multiple: "Marcação dupla",
+  uncertain: "Leitura incerta",
   low_confidence: "Baixa confiança",
   unreadable: "Questão ilegível",
   qr_unreadable: "QR Code não identificado",

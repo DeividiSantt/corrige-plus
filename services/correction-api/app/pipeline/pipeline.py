@@ -6,8 +6,9 @@ import tempfile
 
 import cv2
 import httpx
+import numpy as np
 
-from app.pipeline.bubble_detection import read_bubbles_with_orientation_fallback
+from app.pipeline.bubble_detection import read_bubbles
 from app.pipeline.config import PipelineConfig
 from app.pipeline.document_detection import detect_document_detailed, normalize_perspective
 from app.pipeline.image_quality import analyze_quality, decode_image
@@ -114,14 +115,19 @@ async def process_signed_image(
         "qr": "not_attempted",
         "answers": "not_attempted",
     }
-    if detection.status != "detected" or detection.corners is None:
+    if (
+        detection.status != "detected"
+        or detection.corners is None
+        or detection.strategy != "markers"
+    ):
+        fiducials_missing = detection.status == "detected" and detection.strategy != "markers"
         return {
             "status": "resubmission_required",
             "secure_token": None,
             "error_code": (
                 "invalid_document_geometry"
                 if detection.status == "invalid_geometry"
-                else "document_not_found"
+                else "fiducials_not_found" if fiducials_missing else "document_not_found"
             ),
             "review_required": False,
             "quality": asdict(quality),
@@ -130,7 +136,12 @@ async def process_signed_image(
             "processing_stages": stages,
         }
     try:
-        normalized = normalize_perspective(image, detection.corners, config)
+        normalized = normalize_perspective(
+            image,
+            detection.corners,
+            config,
+            marker_centers=detection.marker_centers,
+        )
     except ValueError:
         stages["document_detection"] = "invalid_geometry"
         stages["normalization"] = "failed"
@@ -147,16 +158,30 @@ async def process_signed_image(
     stages["normalization"] = "completed"
     qr_result = read_qr_progressive(image, normalized, config)
     stages["qr"] = qr_result.status
-    # A rotação auxiliar usada para tentar ler o QR não deve girar a página
-    # normalizada antes da leitura das bolhas.
     oriented = normalized
+    bubble_rotation_degrees = 0
+    if config.profile_id == "corrige-plus-v2-subject-blocks":
+        # The fiducials remove perspective but cannot distinguish the two
+        # 180-degree orientations. The CHS QR is printed in the upper-right;
+        # use its detected location (not the QR decoder's trial rotation) to
+        # choose the bubble grid orientation.
+        detector = cv2.QRCodeDetector()
+        try:
+            detected_qr, qr_points = detector.detect(oriented)
+        except cv2.error:
+            detected_qr, qr_points = False, None
+        if detected_qr and qr_points is not None:
+            qr_center = np.asarray(qr_points, dtype=np.float32).reshape(-1, 2).mean(axis=0)
+            if qr_center[0] < oriented.shape[1] / 2 and qr_center[1] >= oriented.shape[0] / 2:
+                oriented = cv2.rotate(oriented, cv2.ROTATE_180)
+                bubble_rotation_degrees = 180
     if oriented.shape[:2] != (config.normalized_height, config.normalized_width):
         oriented = cv2.resize(
             oriented,
             (config.normalized_width, config.normalized_height),
             interpolation=cv2.INTER_AREA,
         )
-    answers, bubble_rotation_degrees = read_bubbles_with_orientation_fallback(
+    answers = read_bubbles(
         oriented,
         total_questions,
         alternatives_count,
@@ -166,7 +191,7 @@ async def process_signed_image(
     stages["answers"] = "read"
     qr_error = QR_ERROR_CODES.get(qr_result.status)
     review_required = qr_result.token is None or any(
-        item.classification in {"multiple", "low_confidence", "unreadable"} for item in answers
+        item.classification in {"multiple", "uncertain", "low_confidence", "unreadable"} for item in answers
     )
     _save_debug_artifacts(image, normalized, qr_result, config, diagnostic_id)
     logger.info(
@@ -186,6 +211,7 @@ async def process_signed_image(
         "quality": asdict(quality),
         "qr_read": asdict(qr_result),
         "layout_version": config.layout_version,
+        "layout_profile_id": config.profile_id,
         "algorithm_version": PIPELINE_VERSION,
         "bubble_rotation_degrees": bubble_rotation_degrees,
         "answers": [asdict(item) for item in answers],

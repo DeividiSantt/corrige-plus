@@ -40,9 +40,10 @@ export function DownloadAnswerSheetsButton({ sheets, label = "Baixar cartões em
       const registrationY = studentY + 6;
       const dividerY = registrationY + 6;
       const signatureY = dividerY + 8;
-      // A leitura OpenCV utiliza a grade a partir de 92 mm. Os textos acima
-      // podem ocupar mais linhas, mas nunca devem mover as bolhas de resposta.
-      const answerStartY = 92;
+      // Os textos acima podem ocupar mais linhas, mas nunca devem mover as
+      // bolhas. No cartão multidisciplinar a coluna direita começa 7,2 mm
+      // acima da esquerda, conforme o layout impresso dessa versão.
+      const answerStartYByColumn = hasSubjectBlocks ? [99.2, 92] : [92, 92];
       pdf.setFontSize(10);
       pdf.text(`Avaliação: ${exam.title}`, margin, 40);
       pdf.text(headerLines, margin, 46);
@@ -53,28 +54,43 @@ export function DownloadAnswerSheetsButton({ sheets, label = "Baixar cartões em
       const qr = await QRCode.toDataURL(sheet.token, { margin: 1, width: 240, errorCorrectionLevel: "M" }); pdf.addImage(qr, "PNG", 166, 38, 28, 28);
       const columns = exam.questions > 25 ? 2 : 1;
       const perColumn = Math.ceil(exam.questions / columns);
+      const columnSpacing = 94;
       const options = ["A", "B", "C", "D", "E"].slice(0, exam.alternatives);
-      const currentY = Array(columns).fill(answerStartY) as number[];
+      const currentY = answerStartYByColumn.slice(0, columns);
+      const blockPositions: Record<number, { labelX: number; centerY: number }> = {
+        1: { labelX: 14, centerY: 109.2 },
+        11: { labelX: 14, centerY: 191.2 },
+        21: { labelX: 114, centerY: 102 },
+        31: { labelX: 108, centerY: 184 },
+      };
+      const centerXByColumn = [28, 122];
       for (let question = 1; question <= exam.questions; question++) {
         const column = Math.floor((question - 1) / perColumn);
         const position = (question - 1) % perColumn;
-        const x = margin + column * 94;
+        const x = margin + column * columnSpacing;
         const block = exam.subjectBlocks?.find((item) => question >= item.start_question_number && question <= item.end_question_number);
         const startsBlock = Boolean(block && (question === block.start_question_number || position === 0));
         if (startsBlock) {
+          const blockPosition = blockPositions[block!.start_question_number];
+          if (blockPosition) {
+            currentY[column] = blockPosition.centerY;
+            centerXByColumn[column] = blockPosition.labelX + 14;
+          } else {
+            currentY[column] += 10;
+          }
           // O título precisa ficar fora da área da primeira alternativa do bloco.
           // Mantemos uma distância fixa para não interferir na marcação nem na leitura.
           pdf.setTextColor("#141414");
           pdf.setFont("helvetica", "bold");
           pdf.setFontSize(10);
-          pdf.text(answerSheetBlockLabel(block!), x, currentY[column] + 3);
+          pdf.text(answerSheetBlockLabel(block!), blockPosition?.labelX ?? x, currentY[column] - 7);
           pdf.setFont("helvetica", "normal");
-          currentY[column] += 10;
         }
-        const y = hasSubjectBlocks ? currentY[column] : answerStartY + position * 7.2;
+        const y = hasSubjectBlocks ? currentY[column] : answerStartYByColumn[column] + position * 7.2;
+        const bubbleStartX = hasSubjectBlocks ? centerXByColumn[column] : x + 14;
         pdf.setFontSize(9);
-        pdf.text(String(question).padStart(2, "0"), x, y + 1.5);
-        options.forEach((option, optionIndex) => { const bubbleX = x + 14 + optionIndex * 14; pdf.circle(bubbleX, y, 3.3); pdf.text(option, bubbleX - 1.6, y + 1.2); });
+        pdf.text(String(question).padStart(2, "0"), hasSubjectBlocks ? bubbleStartX - 14 : x, y + 1.5);
+        options.forEach((option, optionIndex) => { const bubbleX = bubbleStartX + optionIndex * 14; pdf.circle(bubbleX, y, 3.3); pdf.text(option, bubbleX - 1.6, y + 1.2); });
         if (hasSubjectBlocks) currentY[column] += 7.2;
       }
       pdf.setFontSize(7); pdf.text("Preencha apenas uma alternativa por questão. Mantenha os quatro marcadores visíveis na foto.", margin, 290);

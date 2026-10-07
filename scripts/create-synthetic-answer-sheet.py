@@ -44,15 +44,15 @@ def main() -> None:
     # A geometria replica o cartão v2: dois blocos inteiros em cada coluna.
     # Matemática 1-10 e Física 11-20 ficam à esquerda;
     # Biologia 21-30 e Química 31-40, à direita.
-    column_base_x = (14, 108)
-    block_start_y = (102, 184)
+    block_start_positions = ((28, 109.2), (28, 191.2), (128, 102), (122, 184))
     for index, answer in enumerate(answers):
         block_index = index // 10
         question_in_block = index % 10
         column = 0 if block_index < 2 else 1
         block_in_column = block_index % 2
-        center_x_mm = column_base_x[column] + 14 + "ABCDE".index(answer) * 14
-        center_y_mm = block_start_y[block_in_column] + question_in_block * 7.2
+        block_x_mm, block_y_mm = block_start_positions[block_index]
+        center_x_mm = block_x_mm + "ABCDE".index(answer) * 14
+        center_y_mm = block_y_mm + question_in_block * 7.2
         center_x = mm_to_px(center_x_mm, pixels_per_mm)
         center_y = mm_to_px(center_y_mm, pixels_per_mm)
         radius = mm_to_px(2.35, pixels_per_mm)

@@ -16,8 +16,7 @@ import numpy as np
 
 from app.pipeline.bubble_detection import read_bubbles
 from app.pipeline.config import PipelineConfig
-from app.pipeline.document_detection import detect_document, normalize_perspective, rotate_quarter_turns
-from app.pipeline.qr_reader import read_qr_progressive
+from app.pipeline.document_detection import detect_document_detailed, normalize_perspective
 
 
 def rotate(image: np.ndarray, degrees: float) -> np.ndarray:
@@ -41,19 +40,17 @@ def perspective(image: np.ndarray) -> np.ndarray:
 
 
 def evaluate(name: str, image: np.ndarray, expected: str, config: PipelineConfig) -> bool:
-    corners = detect_document(image, config)
-    if corners is None:
+    detection = detect_document_detailed(image, config)
+    if detection.corners is None or detection.strategy != "markers":
         print(f"{name}: novo envio necessário (cartão não localizado)")
         return False
-    normalized = normalize_perspective(image, corners, config)
-    qr = read_qr_progressive(image, normalized, config)
-    oriented = rotate_quarter_turns(normalized, qr.rotation_degrees or 0)
-    answers = read_bubbles(oriented, len(expected), 5, config)
+    normalized = normalize_perspective(image, detection.corners, config)
+    answers = read_bubbles(normalized, len(expected), 5, config)
     received = "".join(answer.detected_answer or "-" for answer in answers)
     matches = sum(answer.detected_answer == expected[index] for index, answer in enumerate(answers))
     blanks = sum(answer.classification == "blank" for answer in answers)
     passed = matches == len(expected)
-    print(f"{name}: {matches}/{len(expected)} corretas · {blanks} em branco · QR {qr.status} · {received}")
+    print(f"{name}: {matches}/{len(expected)} corretas · {blanks} em branco · {received}")
     return passed
 
 

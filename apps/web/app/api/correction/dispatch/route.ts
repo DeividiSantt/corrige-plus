@@ -33,7 +33,7 @@ function reviewReason(answer: ReviewAnswer) {
   const percentage = (value: number) => `${Math.round(value * 100)}%`;
   const [first, second] = ranked;
 
-  if (answer.classification === "low_confidence" && first && second) {
+  if ((answer.classification === "uncertain" || answer.classification === "low_confidence") && first && second) {
     return `Leitura ambígua: ${first[0]} (${percentage(first[1])}) ficou próxima de ${second[0]} (${percentage(second[1])}). Revise antes de finalizar.`;
   }
   if (answer.classification === "multiple" && first && second) {
@@ -192,6 +192,7 @@ export async function POST(request: Request) {
         storage_key: file.storage_key,
         signed_url: signed.signedUrl,
         layout_version: usesSubjectBlockLayout ? "corrige-plus-v2-subject-blocks" : "corrige-plus-v1",
+        layout_profile_id: usesSubjectBlockLayout ? "corrige-plus-v2-subject-blocks" : "corrige-plus-v1",
         total_questions: exam.total_questions,
         alternatives_count: exam.alternatives_count,
         subject_blocks: subjectBlocks || [],
@@ -357,10 +358,12 @@ export async function POST(request: Request) {
         const hasAmbiguousAnswers =
           (!selectedManualSheet && result.review_required) ||
           detectedRows.some((answer: { classification: string }) =>
-            ["multiple", "low_confidence", "unreadable"].includes(answer.classification),
+            ["multiple", "uncertain", "low_confidence", "unreadable"].includes(answer.classification),
           );
         const needsReview = allowAmbiguousResults
-          ? !result.secure_token || detectedRows.some((answer: { classification: string }) => answer.classification === "unreadable")
+          ? !result.secure_token || detectedRows.some((answer: { classification: string }) =>
+              ["multiple", "uncertain", "unreadable"].includes(answer.classification),
+            )
           : hasAmbiguousAnswers;
         const { error: sheetUpdateError } = await supabase
           .from("answer_sheets")
@@ -389,7 +392,7 @@ export async function POST(request: Request) {
         }
         const pending = detectedRows
           .filter((answer: { classification: string }) =>
-            ["multiple", "low_confidence", "unreadable"].includes(answer.classification),
+            ["multiple", "uncertain", "low_confidence", "unreadable"].includes(answer.classification),
           )
           .map((answer: ReviewAnswer & { question_number: number; confidence: number; crop_coordinates: unknown }) => ({
             organization_id: organizationId,

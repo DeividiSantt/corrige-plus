@@ -1,6 +1,6 @@
 import "server-only";
 
-export const EXPECTED_PIPELINE_VERSION = "opencv-v0.2";
+export const EXPECTED_PIPELINE_VERSION = "opencv-omr-v1.0";
 // Serviços gratuitos podem precisar de alguns segundos para sair do modo de
 // espera. A primeira requisição acorda o serviço; estas tentativas evitam que
 // um cartão seja marcado como falho enquanto ele ainda está inicializando.

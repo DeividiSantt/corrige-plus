@@ -43,7 +43,7 @@ export async function POST(request: Request) {
     await verifyCorrectionService(service.url);
     const result = await callCorrectionService({ url: service.url, apiKey: service.apiKey, body: {
       processing_file_id: randomUUID(), batch_id: randomUUID(), exam_id: exam.id, owner_id: userId, storage_key: storageKey, signed_url: signed.signedUrl,
-      layout_version: subjectBlocks?.length ? "corrige-plus-v2-subject-blocks" : "corrige-plus-v1", total_questions: exam.total_questions, alternatives_count: exam.alternatives_count, subject_blocks: subjectBlocks || [],
+      layout_version: subjectBlocks?.length ? "corrige-plus-v2-subject-blocks" : "corrige-plus-v1", layout_profile_id: subjectBlocks?.length ? "corrige-plus-v2-subject-blocks" : "corrige-plus-v1", total_questions: exam.total_questions, alternatives_count: exam.alternatives_count, subject_blocks: subjectBlocks || [],
     } });
     const readByQuestion = new Map((result.answers || []).map((answer: { question_number: number }) => [answer.question_number, answer]));
     const answers = (questions || []).map((question) => {
